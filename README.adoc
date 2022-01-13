@@ -1,0 +1,43 @@
+= gst-pipewire
+
+This is a GStreamer plugin that is an alternative to the one included in PipeWire.
+It is a separate plugin that contains more experimental features not yet present
+in PipeWire's GStreamer plugin.
+
+The long term goal is to merge this plugin with PipeWire's.
+
+
+== Building and installing
+
+gst-pipewire uses https://mesonbuild.com[meson] as its build system. Amongst other reasons, this makes
+integration with existing GStreamer build setups easier, such as https://gitlab.freedesktop.org/gstreamer/cerbero[Cerbero].
+
+The build was tested with meson 0.61.0, but older versions should be supported as well.
+
+Create a build directory for an out-of-tree build:
+
+    make build
+    cd build
+
+Now set up the build by running meson:
+
+    meson ..
+
+You might want to look into the `--buildtype=plain` flag if the compiler flags Meson adds are a problem.
+This is particularly useful for packagers. https://mesonbuild.com/Quick-guide.html#using-meson-as-a-distro-packager[Read here for more.]
+
+Also, you might be interested in the `-Dprefix` and `-Dlibdir` arguments to control where to install the
+resulting binaries. Again, this is particularly useful for packagers.
+
+Finally, build and install the code by running ninja:
+
+    ninja install
+
+
+== Available GStreamer elements
+
+Currently, only `pwaudiosink` is available. This is an audio sink that is designed for both PCM and non-PCM audio playback (non-PCM is not done yet).
+The sink makes an effort to synchronize PCM playback as accurately as possible, by inserting nullsamples or dropping first samples if necessary.
+
+This plugin also implements a `pwstreamclock` that exposes a GstClock based on information from `pw_stream` `rate_diff` factors, thus
+modeling a clock that runs at the speed of the driver of `pw_stream`.
