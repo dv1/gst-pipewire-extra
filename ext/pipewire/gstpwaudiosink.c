@@ -1880,8 +1880,7 @@ static void gst_pw_audio_sink_io_changed(void *data, uint32_t id, void *area, G_
 			}
 			else
 			{
-				/* TODO: When does this occur?) */
-				GST_DEBUG_OBJECT(self, "got NULL SPA IO position");
+				GST_DEBUG_OBJECT(self, "got NULL SPA IO position; our PW client node got removed from the driver");
 			}
 
 			break;
