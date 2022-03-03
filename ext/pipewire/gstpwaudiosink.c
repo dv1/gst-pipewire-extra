@@ -2025,7 +2025,7 @@ static void gst_pw_audio_sink_on_process_stream(void *data)
 				gsize buffer_size;
 				gsize spa_data_chunk_byte_offset = 0;
 
-				num_frames_to_take = self->quantum_size;
+				num_frames_to_take = self->spa_rate_match->size;
 
 				if (!self->synced_playback_started)
 				{
@@ -2039,7 +2039,7 @@ static void gst_pw_audio_sink_on_process_stream(void *data)
 					);
 				}
 
-				retrieval_result = gst_pw_audio_queue_retrieve_buffer(self->audio_buffer_queue, self->quantum_size, num_frames_to_take, current_time, latency, &retrieval_details);
+				retrieval_result = gst_pw_audio_queue_retrieve_buffer(self->audio_buffer_queue, num_frames_to_take, num_frames_to_take, current_time, latency, &retrieval_details);
 				if (G_UNLIKELY(retrieval_details.retrieved_buffer == NULL))
 				{
 					switch (retrieval_result)
@@ -2109,7 +2109,7 @@ static void gst_pw_audio_sink_on_process_stream(void *data)
 
 	if (produce_silence_quantum)
 	{
-		guint64 num_silence_frames = self->quantum_size;
+		guint64 num_silence_frames = self->spa_rate_match->size;
 		guint64 num_silence_bytes = num_silence_frames * stride;
 
 		g_assert(num_silence_frames <= (inner_spa_data->maxsize / stride));
