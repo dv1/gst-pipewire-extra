@@ -76,6 +76,9 @@ GST_DEBUG_CATEGORY_EXTERN(pw_audio_format_debug);
 
 typedef struct
 {
+	/* Human-readable name for this audio type. */
+	gchar const *name;
+
 	/* Caps in string form, intended to be used when adding
 	 * GstPad templates to an element. Not directly used by callers;
 	 * these use gst_pw_audio_format_get_template_caps() instead. */
@@ -97,6 +100,7 @@ GstPipewireAudioTypeDetails;
 static GstPipewireAudioTypeDetails const audio_type_details[GST_NUM_PIPEWIRE_AUDIO_TYPES] = {
 	/* PCM */
 	{
+		.name = "PCM",
 		.template_caps_string = \
 			GST_AUDIO_CAPS_MAKE(GST_AUDIO_FORMATS_ALL) \
 			", layout = (string) { interleaved }",
@@ -105,12 +109,14 @@ static GstPipewireAudioTypeDetails const audio_type_details[GST_NUM_PIPEWIRE_AUD
 
 	/* DSD */
 	{
+		.name = "DSD",
 		.template_caps_string = "audio/x-dsd", // TODO: more detailed caps
 		.is_contiguous = TRUE
 	},
 
 	/* MPEG */
 	{
+		.name = "MPEG",
 		.template_caps_string = \
 			"audio/mpeg, " \
 			"parsed = (boolean) true, " \
@@ -121,6 +127,7 @@ static GstPipewireAudioTypeDetails const audio_type_details[GST_NUM_PIPEWIRE_AUD
 
 	/* AC3 */
 	{
+		.name = "AC3",
 		.template_caps_string = \
 			"audio/x-ac3, " \
 			"framed = (boolean) true, " \
@@ -132,6 +139,7 @@ static GstPipewireAudioTypeDetails const audio_type_details[GST_NUM_PIPEWIRE_AUD
 
 	/* EAC3 */
 	{
+		.name = "EAC3",
 		.template_caps_string = \
 			"audio/x-eac3, " \
 			"framed = (boolean) true, " \
@@ -143,24 +151,28 @@ static GstPipewireAudioTypeDetails const audio_type_details[GST_NUM_PIPEWIRE_AUD
 
 	/* TrueHD */
 	{
+		.name = "TrueHD",
 		.template_caps_string = "audio/x-true-hd",
 		.is_contiguous = FALSE
 	},
 
 	/* DTS */
 	{
+		.name = "DTS",
 		.template_caps_string = "audio/x-dts",
 		.is_contiguous = FALSE
 	},
 
 	/* DTS-HD */
 	{
+		.name = "DTS-HD",
 		.template_caps_string = "audio/x-dts",
 		.is_contiguous = FALSE
 	},
 
 	/* MHAS */
 	{
+		.name = "MPEG-H audio stream",
 		.template_caps_string = "audio/x-mhas",
 		.is_contiguous = FALSE
 	}
@@ -168,10 +180,27 @@ static GstPipewireAudioTypeDetails const audio_type_details[GST_NUM_PIPEWIRE_AUD
 
 
 /**
+ * gst_pw_audio_format_get_audio_type_name:
+ * @audio_type Audio type to get a name for.
+ *
+ * This returns a human-readable name for this audio type. The name is useful
+ * for logging and for UIs. Do not use this as an string ID for the audio type.
+ *
+ * Returns: The name for this audio type.
+ */
+gchar const *gst_pw_audio_format_get_audio_type_name(GstPipewireAudioType audio_type)
+{
+	g_assert((audio_type >= 0) && (audio_type < GST_NUM_PIPEWIRE_AUDIO_TYPES));
+	return audio_type_details[audio_type].name;
+}
+
+
+/**
  * gst_pw_audio_format_get_template_caps:
  *
- * Returns #GstCaps suitable for pad templates. These caps contain all
- * formats and audio types supported by the GStreamer PipeWire audio plugin.
+ * Returns #GstCaps suitable for pad templates. The return value is equivalent
+ * to calling gst_pw_audio_format_get_template_caps_for_type() for all audio
+ * types and concatenating the results of all those calls.
  *
  * Returns: (transfer full): the #GstCaps.
  */
@@ -191,6 +220,22 @@ GstCaps* gst_pw_audio_format_get_template_caps(void)
 	}
 
 	return aggregated_template_caps;
+}
+
+
+/**
+ * @gst_pw_audio_format_get_template_caps_for_type:
+ * @audio_type Audio type to get template caps for.
+ *
+ * Returns #GstCaps suitable for pad templates. These caps specify
+ * the capabilities supporter for the given audio_type.
+ *
+ * Returns: (transfer full): the #GstCaps.
+ */
+GstCaps* gst_pw_audio_format_get_template_caps_for_type(GstPipewireAudioType audio_type)
+{
+	g_assert((audio_type >= 0) && (audio_type < GST_NUM_PIPEWIRE_AUDIO_TYPES));
+	return gst_caps_from_string(audio_type_details[audio_type].template_caps_string);
 }
 
 
@@ -454,6 +499,71 @@ gboolean gst_pw_audio_format_to_spa_pod(
 
 error:
 	return FALSE;
+}
+
+
+/**
+ * gst_pw_audio_format_build_spa_pod_for_probing:
+ * @audio_type Audio type to get an SPA POD for.
+ * @builder_buffer: Builder buffer to use for building the SPA POD.
+ * @builder_buffer_size: Size of builder_buffer in bytes. Must be > 0.
+ * @pod: Pointer to SPA POD pointer that shall be passed the new SPA POD.
+ *
+ * This builds a minimal SPA POD for the given audio type. That POD is suitable
+ * for probing the PipeWire graph whether it can handle such an audio type or not.
+ * Do not use this function for constructing PODs for actual playback - only use
+ * this for probing. For actual playback, use gst_pw_audio_format_to_spa_pod().
+ *
+ * The SPA POD is built inside the builder_buffer, which must be of sufficient
+ * size, specified by builder_buffer_size. Typical recommended size is 1024 bytes.
+ * Note that the returned POD uses the builder_buffer as its memory, so that
+ * buffer must remain valid for as long as the POD is in use.
+ *
+ * Returns: TRUE if the SPA POD could be built.
+ */
+gboolean gst_pw_audio_format_build_spa_pod_for_probing(
+	GstPipewireAudioType audio_type,
+	guint8 *builder_buffer, gsize builder_buffer_size,
+	struct spa_pod const **pod
+)
+{
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+	struct spa_pod_builder builder = SPA_POD_BUILDER_INIT(builder_buffer, builder_buffer_size);
+#pragma GCC diagnostic pop
+
+	g_assert(pod != NULL);
+
+	switch (audio_type)
+	{
+		case GST_PIPEWIRE_AUDIO_TYPE_PCM:
+			*pod = spa_format_audio_raw_build(
+				&builder, SPA_PARAM_EnumFormat,
+				&SPA_AUDIO_INFO_RAW_INIT(
+					.format = SPA_AUDIO_FORMAT_UNKNOWN,
+					.channels = 0,
+					.rate = 0
+				)
+			);
+			break;
+
+		case GST_PIPEWIRE_AUDIO_TYPE_DSD:
+			*pod = spa_format_audio_dsd_build(
+				&builder, SPA_PARAM_EnumFormat,
+				&SPA_AUDIO_INFO_DSD_INIT(
+					.bitorder = SPA_PARAM_BITORDER_unknown,
+					.interleave = 0,
+					.channels = 0,
+					.rate = 0
+				)
+			);
+			break;
+
+		default:
+			return FALSE;
+	}
+
+	return TRUE;
 }
 
 
