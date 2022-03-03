@@ -747,7 +747,7 @@ GstPwAudioQueueRetrievalResult gst_pw_audio_queue_retrieve_buffer(
 			 * current_time value). The latter case typically happens because the
 			 * output is already synced, or because synced output is turned off.
 			 * Behave like a simple queue in these cases. */
-			retrieved_buffer = gst_adapter_take_buffer(queue->priv->contiguous_audio_buffer_queue, actual_num_output_frames);
+			retrieved_buffer = gst_adapter_take_buffer(queue->priv->contiguous_audio_buffer_queue, actual_num_output_frames * stride);
 			retrieval_details->num_silence_frames_to_prepend = 0;
 			retrieval_details->num_silence_frames_to_append = 0;
 
