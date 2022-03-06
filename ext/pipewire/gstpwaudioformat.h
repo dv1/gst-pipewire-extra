@@ -27,6 +27,7 @@
 
 #include <gst/gst.h>
 #include <gst/audio/audio.h>
+#include "gstpipewirecore.h"
 
 
 G_BEGIN_DECLS
@@ -88,6 +89,27 @@ gchar* gst_pw_audio_format_to_string(GstPwAudioFormat const *pw_audio_format);
 gsize gst_pw_audio_format_calculate_num_frames_from_duration(GstPwAudioFormat const *pw_audio_format, GstClockTime duration);
 GstClockTime gst_pw_audio_format_calculate_duration_from_num_frames(GstPwAudioFormat const *pw_audio_format, gsize num_frames);
 void gst_pw_audio_format_write_silence_frames(GstPwAudioFormat const *pw_audio_format, gpointer dest_frames, gsize num_silence_frames_to_write);
+
+
+/**
+ * GstPwAudioFormatProbe:
+ *
+ * Opaque #GstPwAudioFormatProbe structure.
+ */
+typedef struct _GstPwAudioFormatProbe GstPwAudioFormatProbe;
+typedef struct _GstPwAudioFormatProbeClass GstPwAudioFormatProbeClass;
+
+#define GST_TYPE_PW_AUDIO_FORMAT_PROBE             (gst_pw_audio_format_probe_get_type())
+#define GST_PW_AUDIO_FORMAT_PROBE(obj)             (G_TYPE_CHECK_INSTANCE_CAST((obj), GST_TYPE_PW_AUDIO_FORMAT_PROBE, GstPwAudioFormatProbe))
+#define GST_PW_AUDIO_FORMAT_PROBE_CLASS(klass)     (G_TYPE_CHECK_CLASS_CAST((klass), GST_TYPE_PW_AUDIO_FORMAT_PROBE, GstPwAudioFormatProbeClass))
+#define GST_PW_AUDIO_FORMAT_PROBE_CAST(obj)        ((GstPwAudioFormatProbe *)(obj))
+#define GST_IS_PW_AUDIO_FORMAT_PROBE(obj)          (G_TYPE_CHECK_INSTANCE_TYPE((obj), GST_TYPE_PW_AUDIO_FORMAT_PROBE))
+#define GST_IS_PW_AUDIO_FORMAT_PROBE_CLASS(klass)  (G_TYPE_CHECK_CLASS_TYPE((klass), GST_TYPE_PW_AUDIO_FORMAT_PROBE))
+
+GType gst_pw_audio_format_probe_get_type(void);
+
+GstPwAudioFormatProbe* gst_pw_audio_format_probe_new(GstPipewireCore *core);
+gboolean gst_pw_audio_format_probe_probe_audio_type(GstPwAudioFormatProbe *pw_audio_format_probe, GstPipewireAudioType audio_type, guint32 target_object_id);
 
 
 G_END_DECLS
