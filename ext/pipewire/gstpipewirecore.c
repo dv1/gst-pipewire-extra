@@ -139,7 +139,7 @@ static void gst_pipewire_core_on_core_error(void *object, uint32_t id, int seque
 #pragma GCC diagnostic ignored "-Wpedantic"
 	GST_ERROR_OBJECT(
 		self,
-		"PipeWire core error:  id: %" PRIu32 "  sequence_number: %d  result: %s (%d)  message: \"%s\"",
+		"PipeWire core error:  id: %" PRIu32 "  sequence_number: %d  POSIX error: \"%s\" (%d)  message: \"%s\"",
 		id,
 		sequence_number,
 		spa_strerror(res), res,
