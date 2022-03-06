@@ -972,8 +972,32 @@ static GstCaps* gst_pw_audio_sink_get_caps(GstBaseSink *basesink, GstCaps *filte
 
 	GST_DEBUG_OBJECT(self, "new get-caps query");
 
-	// TODO: Replace this placeholder template caps call with actual format enumeration.
-	available_sinkcaps = gst_pw_audio_format_get_template_caps();
+	if (self->pipewire_core->core != NULL)
+	{
+		GstPwAudioFormatProbe *probe;
+		gint audio_type;
+		uint32_t target_object_id;
+
+		probe = gst_pw_audio_format_probe_new(self->pipewire_core);
+
+		GST_OBJECT_LOCK(self);
+		target_object_id = self->target_object_id;
+		GST_OBJECT_UNLOCK(self);
+
+		available_sinkcaps = gst_caps_new_empty();
+
+		for (audio_type = 0; audio_type < GST_NUM_PIPEWIRE_AUDIO_TYPES; ++audio_type)
+		{
+			if (gst_pw_audio_format_probe_probe_audio_type(probe, audio_type, target_object_id))
+				gst_caps_append(available_sinkcaps, gst_pw_audio_format_get_template_caps_for_type(audio_type));
+		}
+
+		gst_object_unref(GST_OBJECT(probe));
+	}
+	else
+	{
+		available_sinkcaps = gst_pw_audio_format_get_template_caps();
+	}
 
 	if (filter != NULL)
 	{
@@ -987,12 +1011,15 @@ static GstCaps* gst_pw_audio_sink_get_caps(GstBaseSink *basesink, GstCaps *filte
 		available_sinkcaps = gst_caps_intersect_full(filter, available_sinkcaps, GST_CAPS_INTERSECT_FIRST);
 		GST_DEBUG_OBJECT(self, "responding to caps query (query has filter caps):");
 		GST_DEBUG_OBJECT(self, "  unfiltered available sink caps: %" GST_PTR_FORMAT, (gpointer)unfiltered_available_sinkcaps);
-		GST_DEBUG_OBJECT(self, "  filtered available sink caps:   %" GST_PTR_FORMAT, (gpointer)available_sinkcaps);
-		GST_DEBUG_OBJECT(self, "  filter:                         %" GST_PTR_FORMAT, (gpointer)filter);
+		GST_DEBUG_OBJECT(self, "  caps filter:                    %" GST_PTR_FORMAT, (gpointer)filter);
+		GST_DEBUG_OBJECT(self, "  final filtered caps for query:  %" GST_PTR_FORMAT, (gpointer)available_sinkcaps);
 		gst_caps_unref(unfiltered_available_sinkcaps);
 	}
 	else
-		GST_DEBUG_OBJECT(self, "responding to query caps (query has no filter caps):  available sink caps: %" GST_PTR_FORMAT, (gpointer)available_sinkcaps);
+	{
+		GST_DEBUG_OBJECT(self, "responding to caps query (query has no filter caps):");
+		GST_DEBUG_OBJECT(self, "  final caps for query:           %" GST_PTR_FORMAT, (gpointer)available_sinkcaps);
+	}
 
 	return available_sinkcaps;
 }
