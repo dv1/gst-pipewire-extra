@@ -27,7 +27,12 @@
 
 #include <gst/gst.h>
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+
 #include <pipewire/pipewire.h>
+
+#pragma GCC diagnostic pop
 
 
 // TODO: Change API here to reuse cores with the same socket FD.
