@@ -791,6 +791,8 @@ struct _GstPwAudioFormatProbe
 	guint8 builder_buffer[AUDIO_FORMAT_PROBE_BUILDER_BUFFER_SIZE];
 
 	enum pw_stream_state last_state;
+
+	gboolean cancelled;
 };
 
 
@@ -833,6 +835,7 @@ static void gst_pw_audio_format_probe_init(GstPwAudioFormatProbe *self)
 
 	self->core = NULL;
 	self->probing_stream = NULL;
+	self->cancelled = FALSE;
 }
 
 
@@ -856,9 +859,6 @@ static void gst_pw_audio_format_probe_finalize(GObject *object)
 
 	g_mutex_clear(&(self->mutex));
 	g_cond_clear(&(self->cond));
-
-	if (self->probing_stream != NULL)
-		pw_stream_destroy(self->probing_stream);
 
 	G_OBJECT_CLASS(gst_pw_audio_format_probe_parent_class)->finalize(object);
 }
@@ -901,18 +901,53 @@ static void pw_on_probing_state_changed(void *data, enum pw_stream_state old_sta
  *
  * This refs the core. The core is unref'd when this probe is disposed of.
  *
+ * Before actually using the probe, call gst_pw_audio_format_probe_setup().
+ *
  * Returns: (transfer full): new #GstPwAudioFormatProbe instance.
  */
 GstPwAudioFormatProbe* gst_pw_audio_format_probe_new(GstPipewireCore *core)
 {
-	gchar *stream_name;
-	struct pw_properties *probing_stream_props;
 	GstPwAudioFormatProbe *pw_audio_format_probe;
 
 	g_assert(core != NULL);
 	g_assert(GST_IS_PIPEWIRE_CORE(core));
 
 	pw_audio_format_probe = GST_PW_AUDIO_FORMAT_PROBE_CAST(g_object_new(GST_TYPE_PW_AUDIO_FORMAT_PROBE, NULL));
+	pw_audio_format_probe->core = gst_object_ref(core);
+
+	/* Clear the floating flag. */
+	gst_object_ref_sink(GST_OBJECT(pw_audio_format_probe));
+
+	return pw_audio_format_probe;
+}
+
+
+/**
+ * gst_pw_audio_format_probe_setup:
+ * @pw_audio_format_probe: a #GstPwAudioFormatProbe
+ *
+ * Sets up a #GstPwAudioFormatProbe for probing the PipeWire graph.
+ *
+ * This internally creates a pw_stream that is later used by
+ * gst_pw_audio_format_probe_probe_audio_type() to see if a particular
+ * audio type is supported. This setup function only needs to be called
+ * once before gst_pw_audio_format_probe_probe_audio_type() calls, but
+ * must be called before that function can be used.
+ *
+ * Once probing is done, gst_pw_audio_format_probe_teardown() must be called.
+ *
+ * MT safe (it takes the object lock while running).
+ */
+void gst_pw_audio_format_probe_setup(GstPwAudioFormatProbe *pw_audio_format_probe)
+{
+	gchar *stream_name;
+	struct pw_properties *probing_stream_props;
+
+	g_assert(GST_IS_PW_AUDIO_FORMAT_PROBE(pw_audio_format_probe));
+
+	GST_OBJECT_LOCK(pw_audio_format_probe);
+
+	pw_audio_format_probe->cancelled = FALSE;
 
 	stream_name = g_strdup_printf("probing_stream_%s", GST_OBJECT_NAME(pw_audio_format_probe));
 	GST_DEBUG_OBJECT(pw_audio_format_probe, "creating new probing stream with name \"%s\"", stream_name);
@@ -926,23 +961,55 @@ GstPwAudioFormatProbe* gst_pw_audio_format_probe_new(GstPipewireCore *core)
 		NULL
 	);
 
-	pw_audio_format_probe->core = gst_object_ref(core);
 	pw_audio_format_probe->probing_stream = pw_stream_new(pw_audio_format_probe->core->core, stream_name, probing_stream_props);
 	g_assert(pw_audio_format_probe->probing_stream != NULL);
 	pw_stream_add_listener(pw_audio_format_probe->probing_stream, &(pw_audio_format_probe->probing_stream_listener), &probing_stream_events, pw_audio_format_probe);
 
 	g_free(stream_name);
 
-	/* Clear the floating flag. */
-	gst_object_ref_sink(GST_OBJECT(pw_audio_format_probe));
+	GST_OBJECT_UNLOCK(pw_audio_format_probe);
+}
 
-	return pw_audio_format_probe;
+
+/**
+ * gst_pw_audio_format_probe_teardown:
+ * @pw_audio_format_probe: a #GstPwAudioFormatProbe
+ *
+ * Tears down resources inside #GstPwAudioFormatProbe for probing the PipeWire graph.
+ *
+ * This is the counterpart to gst_pw_audio_format_probe_setup(). It is called once
+ * all gst_pw_audio_format_probe_probe_audio_type() are done. After this call,
+ * probing can only be done if gst_pw_audio_format_probe_setup() is called again.
+ *
+ * This also calls gst_pw_audio_format_probe_cancel() in case probing is ongoing.
+ *
+ * MT safe (it takes the object lock while running).
+ */
+void gst_pw_audio_format_probe_teardown(GstPwAudioFormatProbe *pw_audio_format_probe)
+{
+	g_assert(GST_IS_PW_AUDIO_FORMAT_PROBE(pw_audio_format_probe));
+
+	/* If a gst_pw_audio_format_probe_probe_audio_type() call is ingoing, we can't
+	 * proceed without running into problems. Cancel that call. Do this _before_
+	 * taking the object lock below, otherwise this would produce a deadlock
+	 * (since gst_pw_audio_format_probe_probe_audio_type() takes that lock as well). */
+	gst_pw_audio_format_probe_cancel(pw_audio_format_probe);
+
+	GST_OBJECT_LOCK(pw_audio_format_probe);
+
+	if (pw_audio_format_probe->probing_stream != NULL)
+	{
+		pw_stream_destroy(pw_audio_format_probe->probing_stream);
+		pw_audio_format_probe->probing_stream = NULL;
+	}
+
+	GST_OBJECT_UNLOCK(pw_audio_format_probe);
 }
 
 
 /**
  * gst_pw_audio_format_probe_probe_audio_type:
- * @core: (transfer none): a #GstPipewireCore
+ * @pw_audio_format_probe: a #GstPwAudioFormatProbe
  * @audio_type: the #GstPipewireAudioType to probe
  * @target_object_id: Target object ID to connect to while probing
  *
@@ -951,14 +1018,32 @@ GstPwAudioFormatProbe* gst_pw_audio_format_probe_new(GstPipewireCore *core)
  * If the probing stream shall not connect to any particular target
  * object, set target_object_id to PW_ID_ANY.
  *
- * Returns: true if the PipeWire graph can handle this audio type.
+ * MT safe (it takes the object lock while running).
+ *
+ * Returns: The result of the probing.
  */
-gboolean gst_pw_audio_format_probe_probe_audio_type(GstPwAudioFormatProbe *pw_audio_format_probe, GstPipewireAudioType audio_type, guint32 target_object_id)
+GstPwAudioFormatProbeResult gst_pw_audio_format_probe_probe_audio_type(GstPwAudioFormatProbe *pw_audio_format_probe, GstPipewireAudioType audio_type, guint32 target_object_id)
 {
+	GstPwAudioFormatProbeResult probe_result;
 	int connect_ret;
+	gboolean cancelled;
 	gboolean can_handle_audio_type;
 
 	g_assert(pw_audio_format_probe != NULL);
+
+	GST_TRACE_OBJECT(pw_audio_format_probe, "about to probe PipeWire graph for \"%s\" audio type support", gst_pw_audio_format_get_audio_type_name(audio_type));
+
+	GST_OBJECT_LOCK(pw_audio_format_probe);
+
+	g_mutex_lock(&(pw_audio_format_probe->mutex));
+	cancelled = pw_audio_format_probe->cancelled;
+	g_mutex_unlock(&(pw_audio_format_probe->mutex));
+
+	if (G_UNLIKELY(cancelled))
+	{
+		probe_result = GST_PW_AUDIO_FORMAT_PROBE_RESULT_CANCELLED;
+		goto finish;
+	}
 
 	pw_audio_format_probe->last_state = PW_STREAM_STATE_UNCONNECTED;
 
@@ -970,7 +1055,8 @@ gboolean gst_pw_audio_format_probe_probe_audio_type(GstPwAudioFormatProbe *pw_au
 	))
 	{
 		GST_FIXME_OBJECT(pw_audio_format_probe, "audio type \"%s\" is currently not supported", gst_pw_audio_format_get_audio_type_name(audio_type));
-		return FALSE;
+		probe_result = GST_PW_AUDIO_FORMAT_PROBE_RESULT_NOT_SUPPORTED;
+		goto finish;
 	}
 
 	pw_thread_loop_lock(pw_audio_format_probe->core->loop);
@@ -986,8 +1072,19 @@ gboolean gst_pw_audio_format_probe_probe_audio_type(GstPwAudioFormatProbe *pw_au
 	if (connect_ret == 0)
 	{
 		g_mutex_lock(&(pw_audio_format_probe->mutex));
+
 		while (pw_audio_format_probe->last_state == PW_STREAM_STATE_UNCONNECTED)
+		{
+			if (pw_audio_format_probe->cancelled)
+			{
+				g_mutex_unlock(&(pw_audio_format_probe->mutex));
+				GST_DEBUG_OBJECT(pw_audio_format_probe, "probing cancelled");
+				probe_result = GST_PW_AUDIO_FORMAT_PROBE_RESULT_CANCELLED;
+				goto finish;
+			}
 			g_cond_wait(&(pw_audio_format_probe->cond), &(pw_audio_format_probe->mutex));
+		}
+
 		g_mutex_unlock(&(pw_audio_format_probe->mutex));
 
 		pw_thread_loop_lock(pw_audio_format_probe->core->loop);
@@ -998,7 +1095,40 @@ gboolean gst_pw_audio_format_probe_probe_audio_type(GstPwAudioFormatProbe *pw_au
 		GST_WARNING_OBJECT(pw_audio_format_probe, "error while trying to connect probing stream: %s (%d)", strerror(-connect_ret), -connect_ret);
 
 	can_handle_audio_type = (connect_ret == 0) && (pw_audio_format_probe->last_state != PW_STREAM_STATE_ERROR);
+	probe_result = can_handle_audio_type ? GST_PW_AUDIO_FORMAT_PROBE_RESULT_SUPPORTED : GST_PW_AUDIO_FORMAT_PROBE_RESULT_NOT_SUPPORTED;
 
 	GST_DEBUG_OBJECT(pw_audio_format_probe, "audio type \"%s\" can be handled by the PipeWire graph: %s", gst_pw_audio_format_get_audio_type_name(audio_type), can_handle_audio_type ? "yes" : "no");
-	return can_handle_audio_type;
+
+finish:
+	GST_OBJECT_UNLOCK(pw_audio_format_probe);
+	return probe_result;
+}
+
+
+/**
+ * gst_pw_audio_format_probe_cancel:
+ * @pw_audio_format_probe: a #GstPwAudioFormatProbe
+ *
+ * Cancels an ongoing gst_pw_audio_format_probe_probe_audio_type() call. Such a call
+ * blocks. If something is wrong in the session manager, that call can block indefinitely,
+ * so provide an exit strategy by making that function cancellable. This should be
+ * cancelled when an element's state switches from PAUSED to READY for example.
+ *
+ * If no gst_pw_audio_format_probe_probe_audio_type() call is currently ongoing,
+ * this does nothing.
+ *
+ * MT safe. Does NOT take the object lock.
+ */
+void gst_pw_audio_format_probe_cancel(GstPwAudioFormatProbe *pw_audio_format_probe)
+{
+	g_assert(pw_audio_format_probe != NULL);
+
+	/* Because gst_pw_audio_format_probe_probe_audio_type() takes the object lock
+	 * we have to avoid doing the same here, otherwise we'd run into a deadlock
+	 * and could never cancel that function. */
+
+	g_mutex_lock(&(pw_audio_format_probe->mutex));
+	pw_audio_format_probe->cancelled = TRUE;
+	g_cond_signal(&(pw_audio_format_probe->cond));
+	g_mutex_unlock(&(pw_audio_format_probe->mutex));
 }

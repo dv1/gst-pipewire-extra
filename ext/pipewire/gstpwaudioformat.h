@@ -99,6 +99,14 @@ void gst_pw_audio_format_write_silence_frames(GstPwAudioFormat const *pw_audio_f
 typedef struct _GstPwAudioFormatProbe GstPwAudioFormatProbe;
 typedef struct _GstPwAudioFormatProbeClass GstPwAudioFormatProbeClass;
 
+typedef enum
+{
+	GST_PW_AUDIO_FORMAT_PROBE_RESULT_SUPPORTED,
+	GST_PW_AUDIO_FORMAT_PROBE_RESULT_NOT_SUPPORTED,
+	GST_PW_AUDIO_FORMAT_PROBE_RESULT_CANCELLED
+}
+GstPwAudioFormatProbeResult;
+
 #define GST_TYPE_PW_AUDIO_FORMAT_PROBE             (gst_pw_audio_format_probe_get_type())
 #define GST_PW_AUDIO_FORMAT_PROBE(obj)             (G_TYPE_CHECK_INSTANCE_CAST((obj), GST_TYPE_PW_AUDIO_FORMAT_PROBE, GstPwAudioFormatProbe))
 #define GST_PW_AUDIO_FORMAT_PROBE_CLASS(klass)     (G_TYPE_CHECK_CLASS_CAST((klass), GST_TYPE_PW_AUDIO_FORMAT_PROBE, GstPwAudioFormatProbeClass))
@@ -109,7 +117,10 @@ typedef struct _GstPwAudioFormatProbeClass GstPwAudioFormatProbeClass;
 GType gst_pw_audio_format_probe_get_type(void);
 
 GstPwAudioFormatProbe* gst_pw_audio_format_probe_new(GstPipewireCore *core);
-gboolean gst_pw_audio_format_probe_probe_audio_type(GstPwAudioFormatProbe *pw_audio_format_probe, GstPipewireAudioType audio_type, guint32 target_object_id);
+void gst_pw_audio_format_probe_setup(GstPwAudioFormatProbe *pw_audio_format_probe);
+void gst_pw_audio_format_probe_teardown(GstPwAudioFormatProbe *pw_audio_format_probe);
+GstPwAudioFormatProbeResult gst_pw_audio_format_probe_probe_audio_type(GstPwAudioFormatProbe *pw_audio_format_probe, GstPipewireAudioType audio_type, guint32 target_object_id);
+void gst_pw_audio_format_probe_cancel(GstPwAudioFormatProbe *pw_audio_format_probe);
 
 
 G_END_DECLS
