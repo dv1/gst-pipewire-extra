@@ -156,7 +156,12 @@ static void gst_pipewire_core_on_core_error(void *object, uint32_t id, int seque
 
 GstPipewireCore* gst_pipewire_core_new(void)
 {
-	return g_object_new(gst_pipewire_core_get_type(), NULL);
+	GstPipewireCore *core = GST_PIPEWIRE_CORE_CAST(g_object_new(gst_pipewire_core_get_type(), NULL));
+
+	/* Clear the floating flag. */
+	gst_object_ref_sink(GST_OBJECT(core));
+
+	return core;
 }
 
 
