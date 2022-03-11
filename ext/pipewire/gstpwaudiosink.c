@@ -127,6 +127,7 @@ struct _GstPwAudioSink
 	GstCaps *sink_caps;
 	GstPwAudioFormat pw_audio_format;
 	GstPwAudioFormatProbe *format_probe;
+	GMutex probe_process_mutex;
 
 	/** Playback states and queued data **/
 
@@ -445,6 +446,7 @@ static void gst_pw_audio_sink_init(GstPwAudioSink *self)
 
 	self->sink_caps = NULL;
 	self->format_probe = NULL;
+	g_mutex_init(&(self->probe_process_mutex));
 
 	self->audio_buffer_queue = gst_pw_audio_queue_new();
 	g_assert(self->audio_buffer_queue != NULL);
@@ -493,6 +495,7 @@ static void gst_pw_audio_sink_finalize(GObject *object)
 	g_free(self->node_name);
 	g_free(self->node_description);
 
+	g_mutex_clear(&(self->probe_process_mutex));
 	g_mutex_clear(&(self->latency_mutex));
 
 	G_OBJECT_CLASS(gst_pw_audio_sink_parent_class)->finalize(object);
@@ -981,7 +984,6 @@ static GstCaps* gst_pw_audio_sink_get_caps(GstBaseSink *basesink, GstCaps *filte
 	{
 		gint audio_type;
 		uint32_t target_object_id;
-		GMutex probe_process_mutex;
 		gboolean cancelled = FALSE;
 
 		/* Take the object lock in case the target_object_id GObject
@@ -996,8 +998,7 @@ static GstCaps* gst_pw_audio_sink_get_caps(GstBaseSink *basesink, GstCaps *filte
 		 * Use a mutex to prevent probing attempts from ever running at the
 		 * same time. (The GstPwAudioFormatProbe's setup, teardown, and
 		 * probe calls themselves are MT safe, but this does not help here. */
-		g_mutex_init(&probe_process_mutex);
-		g_mutex_lock(&probe_process_mutex);
+		g_mutex_lock(&(self->probe_process_mutex));
 
 		available_sinkcaps = gst_caps_new_empty();
 
@@ -1026,8 +1027,7 @@ static GstCaps* gst_pw_audio_sink_get_caps(GstBaseSink *basesink, GstCaps *filte
 
 		gst_pw_audio_format_probe_teardown(self->format_probe);
 
-		g_mutex_unlock(&probe_process_mutex);
-		g_mutex_clear(&probe_process_mutex);
+		g_mutex_unlock(&(self->probe_process_mutex));
 
 		if (cancelled)
 		{
