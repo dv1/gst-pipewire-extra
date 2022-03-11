@@ -565,6 +565,7 @@ gboolean gst_pw_audio_format_build_spa_pod_for_probing(
 			);
 			break;
 
+#if PW_CHECK_VERSION(0, 3, 37)
 		case GST_PIPEWIRE_AUDIO_TYPE_DSD:
 			*pod = spa_format_audio_dsd_build(
 				&builder, SPA_PARAM_EnumFormat,
@@ -581,6 +582,7 @@ gboolean gst_pw_audio_format_build_spa_pod_for_probing(
 				)
 			);
 			break;
+#endif
 
 		default:
 			return FALSE;
