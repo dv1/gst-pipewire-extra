@@ -157,7 +157,7 @@ struct _GstPwAudioSink
 	 * too much in some cases.
 	 * This is a gint, not a gboolean, since it is used by the GLib atomic functions. */
 	gint notify_upstream_about_stream_delay;
-	/* If this is FALSE, then on_process_stream() will get the current time of stream_clock
+	/* If this is FALSE, then the process callback will get the current time of stream_clock
 	 * and pass it to the gst_pw_audio_queue_retrieve_buffer() function to ensure that
 	 * the output of the queue is in sync with the clock's current time. When the queue
 	 * returns a buffer, this flag is set to TRUE. Followup gst_pw_audio_queue_retrieve_buffer()
@@ -255,20 +255,40 @@ static gboolean gst_pw_audio_sink_get_provide_clock_flag(GstPwAudioSink *self);
 static void gst_pw_audio_sink_activate_stream_unlocked(GstPwAudioSink *self, gboolean activate);
 static void gst_pw_audio_sink_reset_audio_buffer_queue_unlocked(GstPwAudioSink *self);
 static void gst_pw_audio_sink_drain(GstPwAudioSink *self);
-
-static void gst_pw_audio_sink_pw_state_changed(void *data, enum pw_stream_state old_state, enum pw_stream_state new_state, const char *error);
-static void gst_pw_audio_sink_io_changed(void *data, uint32_t id, void *area, uint32_t size);
-static void gst_pw_audio_sink_on_process_stream(void *data);
 static void gst_pw_audio_sink_disconnect_stream(GstPwAudioSink *self);
 
 
-static const struct pw_stream_events stream_events =
+/* pw_stream callbacks for both contiguous and packetized data. */
+static void gst_pw_audio_sink_pw_state_changed(void *data, enum pw_stream_state old_state, enum pw_stream_state new_state, const char *error);
+static void gst_pw_audio_sink_io_changed(void *data, uint32_t id, void *area, uint32_t size);
+
+
+/* pw_stream callbacks for contiguous data. */
+
+static void gst_pw_audio_sink_contiguous_on_process_stream(void *data);
+
+static const struct pw_stream_events contiguous_stream_events =
 {
 	PW_VERSION_STREAM_EVENTS,
 	.state_changed = gst_pw_audio_sink_pw_state_changed,
 	.io_changed = gst_pw_audio_sink_io_changed,
-	.process = gst_pw_audio_sink_on_process_stream,
+	.process = gst_pw_audio_sink_contiguous_on_process_stream,
 };
+
+
+/* pw_stream callbacks for packetized data. */
+
+static void gst_pw_audio_sink_packetized_on_process_stream(void *data);
+
+static const struct pw_stream_events packetized_stream_events =
+{
+	PW_VERSION_STREAM_EVENTS,
+	.state_changed = gst_pw_audio_sink_pw_state_changed,
+	.io_changed = gst_pw_audio_sink_io_changed,
+	.process = gst_pw_audio_sink_packetized_on_process_stream,
+};
+
+
 
 
 static void gst_pw_audio_sink_class_init(GstPwAudioSinkClass *klass)
@@ -938,6 +958,15 @@ static gboolean gst_pw_audio_sink_set_caps(GstBaseSink *basesink, GstCaps *caps)
 		goto error;
 	}
 
+	/* The listener is removed when disconnecting, so we can just add
+	 * it here without worrying about any previously added ones. */
+	pw_stream_add_listener(
+		self->stream,
+		&(self->stream_listener),
+		gst_pw_audio_format_data_is_contiguous(self->pw_audio_format.audio_type) ? &contiguous_stream_events : &packetized_stream_events,
+		self
+	);
+
 	pw_stream_connect(
 		self->stream,
 		PW_DIRECTION_OUTPUT,
@@ -1187,8 +1216,6 @@ static gboolean gst_pw_audio_sink_start(GstBaseSink *basesink)
 		GST_ERROR_OBJECT(self, "could not create PipeWire stream");
 		goto error;
 	}
-
-	pw_stream_add_listener(self->stream, &(self->stream_listener), &stream_events, self);
 
 	GST_DEBUG_OBJECT(self, "PipeWire stream successfully created");
 
@@ -1916,6 +1943,20 @@ static void gst_pw_audio_sink_drain(GstPwAudioSink *self)
 }
 
 
+static void gst_pw_audio_sink_disconnect_stream(GstPwAudioSink *self)
+{
+	if (!self->stream_is_connected)
+		return;
+
+	pw_thread_loop_lock(self->pipewire_core->loop);
+	gst_pw_audio_sink_activate_stream_unlocked(self, FALSE);
+	pw_stream_disconnect(self->stream);
+	pw_thread_loop_unlock(self->pipewire_core->loop);
+
+	self->stream_is_connected = FALSE;
+}
+
+
 static gchar const * spa_io_position_state_to_string(enum spa_io_position_state const state)
 {
 	switch (state)
@@ -1997,7 +2038,7 @@ static void gst_pw_audio_sink_io_changed(void *data, uint32_t id, void *area, G_
 }
 
 
-static void gst_pw_audio_sink_on_process_stream(void *data)
+static void gst_pw_audio_sink_contiguous_on_process_stream(void *data)
 {
 	/* In here, we pass data to the pw_stream and report the rate_diff
 	 * to stream_clock. Not much else is done, since this function must
@@ -2229,15 +2270,7 @@ finish:
 }
 
 
-static void gst_pw_audio_sink_disconnect_stream(GstPwAudioSink *self)
+static void gst_pw_audio_sink_packetized_on_process_stream(void *data)
 {
-	if (!self->stream_is_connected)
-		return;
-
-	pw_thread_loop_lock(self->pipewire_core->loop);
-	gst_pw_audio_sink_activate_stream_unlocked(self, FALSE);
-	pw_stream_disconnect(self->stream);
-	pw_thread_loop_unlock(self->pipewire_core->loop);
-
-	self->stream_is_connected = FALSE;
+	// TODO
 }
