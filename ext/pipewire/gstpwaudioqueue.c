@@ -363,6 +363,12 @@ void gst_pw_audio_queue_push_silence_frames(GstPwAudioQueue *queue, gsize num_si
  * @buffer: (transfer full): a #GstBuffer whose data shall be pushed to the end of the queue
  *
  * Adds (pushes) data to the end of the queue.
+ * If the buffer has a valid PTS, and no other buffer with valid PTS was pushed
+ * in yet,  or if the last gst_pw_audio_queue_retrieve_buffer() call returned
+ * GST_PW_AUDIO_QUEUE_RETRIEVAL_RESULT_QUEUE_IS_EMPTY, then the buffer's PTS
+ * will be used as the PTS for syncing the start of playback. That is, the next
+ * gst_pw_audio_queue_retrieve_buffer() will use this PTS for synced output.
+ * If the buffer's PTS is not valid, none of this is done.
  */
 void gst_pw_audio_queue_push_buffer(GstPwAudioQueue *queue, GstBuffer *buffer)
 {
@@ -370,7 +376,6 @@ void gst_pw_audio_queue_push_buffer(GstPwAudioQueue *queue, GstBuffer *buffer)
 
 	g_assert(queue != NULL);
 	g_assert(buffer != NULL);
-	g_assert(GST_CLOCK_TIME_IS_VALID(GST_BUFFER_DURATION(buffer)));
 	g_assert(queue->priv->format_initialized);
 
 	buffer_pts = GST_BUFFER_PTS(buffer);
