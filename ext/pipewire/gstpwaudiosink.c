@@ -129,15 +129,18 @@ struct _GstPwAudioSink
 	GstPwAudioFormatProbe *format_probe;
 	GMutex probe_process_mutex;
 
-	/** Playback states and queued data **/
+	/** Contiguous data **/
 
 	/* NOTE: Access to audio_buffer_queue requires its object lock to be taken
 	 * if the pw_stream is connected. */
 	GstPwAudioQueue *audio_buffer_queue;
 	GCond audio_buffer_queue_cond;
+
+	/** Misc playback states **/
+
 	/* Calculated in start() out of the audio_buffer_queue_length property. */
 	GstClockTime max_queue_fill_level;
-	/* Set to 1 during the flush-start event, and back to 0 during the flush-stop one.
+	/* Set to 1 during the flush-start event, and back to 0 during the flush-sto p one.
 	 * This is a gint, not a gboolean, since it is used by the GLib atomic functions. */
 	gint flushing;
 	/* Set to 1 during the PLAYING->PAUSED state change (not during READY->PAUSED!).
@@ -145,10 +148,10 @@ struct _GstPwAudioSink
 	 * the pipeline is paused and gets shut down.
 	 * This is a gint, not a gboolean, since it is used by the GLib atomic functions. */
 	gint paused;
-	/* Set to 1 in on_process_stream() if the stream delay has changed.
+	/* Set to 1 in the process callback if the stream delay has changed.
 	 * Read in render(). If it is set to 1, the code in render() will
 	 * post a latency message to inform the pipeline about the stream
-	 * delay (as latency). This is not done directly in on_process_stream()
+	 * delay (as latency). This is not done directly in the process callback
 	 * because that function must finish as quickly as possible, and
 	 * posting a gstmessage could potentially block that function a bit
 	 * too much in some cases.
@@ -166,6 +169,10 @@ struct _GstPwAudioSink
 	gboolean synced_playback_started;
 	/* Used for checking the buffer PTS for discontinuities. */
 	GstClockTime last_running_time_pts_end;
+	/* Latency in nanoseconds, based on the value of stream_delay_in_ns. */
+	GstClockTime latency;
+	/* The latency_mutex synchronizes access to latency and stream_delay_in_ns. */
+	GMutex latency_mutex;
 
 	/** Element clock **/
 
@@ -196,10 +203,9 @@ struct _GstPwAudioSink
 	 * requires the latency_mutex lock to be taken
 	 * if the pw_stream is connected. */
 	gint64 stream_delay_in_ns;
-	GstClockTime latency;
+	/* Quantum size in driver ticks. Set in the io_changed callback
+	 * when it is passed SPA_IO_Position information. */
 	guint64 quantum_size;
-	/* The latency mutex synchronizes access to latency and stream_delay_in_ns. */
-	GMutex latency_mutex;
 };
 
 
@@ -290,7 +296,7 @@ static void gst_pw_audio_sink_class_init(GstPwAudioSinkClass *klass)
 	);
 	gst_caps_unref(template_caps);
 
-	object_class->finalize	   = GST_DEBUG_FUNCPTR(gst_pw_audio_sink_finalize);
+	object_class->finalize     = GST_DEBUG_FUNCPTR(gst_pw_audio_sink_finalize);
 	object_class->set_property = GST_DEBUG_FUNCPTR(gst_pw_audio_sink_set_property);
 	object_class->get_property = GST_DEBUG_FUNCPTR(gst_pw_audio_sink_get_property);
 
@@ -451,12 +457,15 @@ static void gst_pw_audio_sink_init(GstPwAudioSink *self)
 	self->audio_buffer_queue = gst_pw_audio_queue_new();
 	g_assert(self->audio_buffer_queue != NULL);
 	g_cond_init(&(self->audio_buffer_queue_cond));
+
 	self->max_queue_fill_level = 0;
 	self->flushing = 0;
 	self->paused = 0;
 	self->notify_upstream_about_stream_delay = 0;
 	self->synced_playback_started = FALSE;
 	self->last_running_time_pts_end = GST_CLOCK_TIME_NONE;
+	self->latency = 0;
+	g_mutex_init(&(self->latency_mutex));
 
 	self->stream_clock = gst_pw_stream_clock_new();
 	g_assert(self->stream_clock != NULL);
@@ -464,13 +473,12 @@ static void gst_pw_audio_sink_init(GstPwAudioSink *self)
 	self->pipewire_core = gst_pipewire_core_new();
 	self->stream = NULL;
 	self->stream_is_connected = FALSE;
+	self->stream_is_active = FALSE;
 	self->spa_position = NULL;
 	self->spa_rate_match = NULL;
 	self->stream_delay_in_ticks = 0;
 	self->stream_delay_in_ns = 0;
-	self->latency = 0;
 	self->quantum_size = 0;
-	g_mutex_init(&(self->latency_mutex));
 
 	gst_pw_audio_sink_set_provide_clock_flag(self, DEFAULT_PROVIDE_CLOCK);
 }
@@ -480,23 +488,25 @@ static void gst_pw_audio_sink_finalize(GObject *object)
 {
 	GstPwAudioSink *self = GST_PW_AUDIO_SINK(object);
 
-	if (self->stream_clock != NULL)
-		gst_object_unref(GST_OBJECT(self->stream_clock));
-
 	if (self->pipewire_core != NULL)
 		gst_object_unref(GST_OBJECT(self->pipewire_core));
 
-	g_cond_clear(&(self->audio_buffer_queue_cond));
+	if (self->stream_clock != NULL)
+		gst_object_unref(GST_OBJECT(self->stream_clock));
 
+	g_mutex_clear(&(self->latency_mutex));
+
+	g_cond_clear(&(self->audio_buffer_queue_cond));
 	if (self->audio_buffer_queue != NULL)
 		gst_object_unref(self->audio_buffer_queue);
 
-	g_free(self->app_name);
-	g_free(self->node_name);
-	g_free(self->node_description);
-
 	g_mutex_clear(&(self->probe_process_mutex));
-	g_mutex_clear(&(self->latency_mutex));
+
+	g_free(self->node_description);
+	g_free(self->node_name);
+	g_free(self->app_name);
+	if (self->stream_properties != NULL)
+		gst_structure_free(self->stream_properties);
 
 	G_OBJECT_CLASS(gst_pw_audio_sink_parent_class)->finalize(object);
 }
@@ -652,7 +662,6 @@ static void gst_pw_audio_sink_get_property(GObject *object, guint prop_id, GValu
 
 static GstStateChangeReturn gst_pw_audio_sink_change_state(GstElement *element, GstStateChange transition)
 {
-	GstStateChangeReturn result;
 	GstPwAudioSink *self = GST_PW_AUDIO_SINK(element);
 
 	switch (transition)
@@ -703,10 +712,7 @@ static GstStateChangeReturn gst_pw_audio_sink_change_state(GstElement *element, 
 			break;
 	}
 
-	if ((result = GST_ELEMENT_CLASS(gst_pw_audio_sink_parent_class)->change_state(element, transition)) == GST_STATE_CHANGE_FAILURE)
-		return result;
-
-	return result;
+	return GST_ELEMENT_CLASS(gst_pw_audio_sink_parent_class)->change_state(element, transition);
 }
 
 
@@ -845,13 +851,6 @@ static gboolean gst_pw_audio_sink_query(GstElement *element, GstQuery *query)
 	}
 
 	return ret;
-}
-
-
-static GstCaps* gst_pw_audio_sink_fixate(GstBaseSink *basesink, GstCaps *caps)
-{
-	caps = gst_pw_audio_format_fixate_caps(caps);
-	return GST_BASE_SINK_CLASS(gst_pw_audio_sink_parent_class)->fixate(basesink, caps);
 }
 
 
@@ -1069,6 +1068,13 @@ static GstCaps* gst_pw_audio_sink_get_caps(GstBaseSink *basesink, GstCaps *filte
 	}
 
 	return available_sinkcaps;
+}
+
+
+static GstCaps* gst_pw_audio_sink_fixate(GstBaseSink *basesink, GstCaps *caps)
+{
+	caps = gst_pw_audio_format_fixate_caps(caps);
+	return GST_BASE_SINK_CLASS(gst_pw_audio_sink_parent_class)->fixate(basesink, caps);
 }
 
 
@@ -1321,8 +1327,13 @@ static GstFlowReturn gst_pw_audio_sink_wait_event(GstBaseSink *basesink, GstEven
 			GstClockTime timestamp, duration;
 
 			/* These events are not explicitly handled, since gaps are already
-			 * compensated for in render() by inserting nullsamples. We just
-			 * log gaps here and do nothing further. */
+			 * compensated for in render() by inserting nullsamples (via the
+			 * alignment threshold check). We just log gaps here and do nothing
+			 * further. */
+			// TODO: Change this: Record the gap event, and next time the
+			// render() function is called, insert the exact amount of nullsamples.
+			// That's because the alignment threshold check won't work properly
+			// for small gaps that are below that threshold.
 
 			gst_event_parse_gap(event, &timestamp, &duration);
 
@@ -2007,7 +2018,12 @@ static void gst_pw_audio_sink_on_process_stream(void *data)
 	if ((self->spa_position != NULL) && (self->spa_position->clock.rate_diff > 0))
 		gst_pw_stream_clock_set_rate_diff(self->stream_clock, self->spa_position->clock.rate_diff);
 
+	/* pw_stream_get_time() is deprecated since version 0.3.50. */
+#if PW_CHECK_VERSION(0, 3, 50)
+	pw_stream_get_time_n(self->stream, &stream_time, sizeof(stream_time));
+#else
 	pw_stream_get_time(self->stream, &stream_time);
+#endif
 
 	/* We set the stream_delay_in_ns value here and access the latency value,
 	 * so the latency mutex must be locked. (stream_delay_in_ticks is only
