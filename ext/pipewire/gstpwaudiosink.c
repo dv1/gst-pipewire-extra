@@ -1435,9 +1435,9 @@ static GstFlowReturn gst_pw_audio_sink_render_contiguous(GstPwAudioSink *self, G
 {
 	GstFlowReturn flow_ret = GST_FLOW_OK;
 	GstBaseSink *basesink = GST_BASE_SINK_CAST(self);
+	GstSegment *segment = &(basesink->segment);
 	GstBuffer *incoming_buffer_copy = NULL;
 	gboolean sync_enabled;
-	gboolean buffer_can_be_played_in_sync = FALSE;
 	gboolean force_discontinuity_handling = FALSE;
 	gsize num_silence_frames_to_insert = 0;
 	GstClockTime buffer_duration;
@@ -1448,7 +1448,7 @@ static GstFlowReturn gst_pw_audio_sink_render_contiguous(GstPwAudioSink *self, G
 
 	if (GST_BUFFER_DURATION_IS_VALID(original_incoming_buffer))
 	{
-		GST_LOG_OBJECT(self, "new incoming buffer: %" GST_PTR_FORMAT, (gpointer)original_incoming_buffer);
+		GST_LOG_OBJECT(self, "original incoming buffer: %" GST_PTR_FORMAT, (gpointer)original_incoming_buffer);
 		buffer_duration = GST_BUFFER_DURATION(original_incoming_buffer);
 	}
 	else
@@ -1460,7 +1460,7 @@ static GstFlowReturn gst_pw_audio_sink_render_contiguous(GstPwAudioSink *self, G
 
 		GST_LOG_OBJECT(
 			self,
-			"new incoming buffer: %" GST_PTR_FORMAT "; no valid duration set, estimated duration %" GST_TIME_FORMAT " based on its data",
+			"original incoming buffer: %" GST_PTR_FORMAT "; no valid duration set, estimated duration %" GST_TIME_FORMAT " based on its data",
 			(gpointer)original_incoming_buffer,
 			GST_TIME_ARGS(buffer_duration)
 		);
@@ -1479,7 +1479,9 @@ static GstFlowReturn gst_pw_audio_sink_render_contiguous(GstPwAudioSink *self, G
 	 * original_incoming_buffer and store that sub-buffer as the
 	 * incoming_buffer_copy. This is done that way because sub-buffers
 	 * can be set to cover only a portion of the original buffer's memory.
-	 * That is how buffers are clipped (if they need to be clipped).
+	 * That is how buffers are clipped (if they need to be clipped); sub-
+	 * buffers are created that share the same underlying datablock as the
+	 * original buffer, thus avoiding unnecessary memory copies.
 	 * The sub-buffer is given original_incoming_buffer's clipped timestamp
 	 * (or the original timestamp if no clipping occurred), as well as its
 	 * duration (also adjusted for clipping if necessary).
@@ -1488,187 +1490,207 @@ static GstFlowReturn gst_pw_audio_sink_render_contiguous(GstPwAudioSink *self, G
 	 * clock-time. This is done to allow the code in on_process_stream to
 	 * immediately compare the buffer's timestamp against the stream_clock
 	 * without first having to do the translation. That function must finish
-	 * its execution ASAP, so offloading computation from it helps. */
+	 * its execution ASAP, so offloading computation from it helps.
+	 *
+	 * First, do a number of checks to filter out cases where
+	 * synchronization cannot be done. */
+
+	if (!sync_enabled)
+	{
+		GST_LOG_OBJECT(self, "synced playback disabled; not adjusting buffer timestamp and duration");
+	}
+	else if (G_UNLIKELY(segment->format != GST_FORMAT_TIME))
+	{
+		GST_LOG_OBJECT(
+			self,
+			"synced playback not possible with non-TIME segment; segment details: %" GST_SEGMENT_FORMAT,
+			(gpointer)segment
+		);
+		sync_enabled = FALSE;
+	}
+	else if (G_UNLIKELY(!GST_BUFFER_PTS_IS_VALID(original_incoming_buffer)))
+	{
+		GST_LOG_OBJECT(
+			self,
+			"synced playback not possible; segment is in TIME format, but incoming buffer is not timestamped"
+		);
+		sync_enabled = FALSE;
+	}
+
 	if (sync_enabled)
 	{
-		GstSegment *segment = &(basesink->segment);
+		GstClockTimeDiff ts_offset;
+		GstClockTime render_delay;
+		GstClockTime pts_begin, pts_end;
+		GstClockTime clipped_pts_begin, clipped_pts_end;
+		GstClockTimeDiff sync_offset;
+		GstSegment pts_clipping_segment;
 
-		if ((segment->format == GST_FORMAT_TIME) && G_LIKELY(GST_CLOCK_TIME_IS_VALID(GST_BUFFER_PTS(original_incoming_buffer))))
+		pts_begin = GST_BUFFER_PTS(original_incoming_buffer);
+		pts_end = GST_BUFFER_PTS(original_incoming_buffer) + buffer_duration;
+
+		gst_segment_init(&pts_clipping_segment, GST_FORMAT_TIME);
+		pts_clipping_segment.start = segment->start;
+		pts_clipping_segment.stop = segment->stop;
+		pts_clipping_segment.duration = -1;
+
+		ts_offset = gst_base_sink_get_ts_offset(basesink);
+		render_delay = gst_base_sink_get_render_delay(basesink);
+		sync_offset = ts_offset - render_delay;
+
+		GST_LOG_OBJECT(
+			self,
+			"ts-offset: %" G_GINT64_FORMAT " render delay: %" GST_TIME_FORMAT " => sync offset: %" G_GINT64_FORMAT,
+			ts_offset,
+			GST_TIME_ARGS(render_delay),
+			sync_offset
+		);
+
+		if (G_UNLIKELY(sync_offset < 0))
 		{
-			GstClockTimeDiff ts_offset;
-			GstClockTime render_delay;
-			GstClockTime pts_begin, pts_end;
-			GstClockTime clipped_pts_begin, clipped_pts_end;
-			GstClockTimeDiff sync_offset;
-			GstSegment pts_clipping_segment;
+			pts_clipping_segment.start += -sync_offset;
+			if (pts_clipping_segment.stop != (guint64)(-1))
+				pts_clipping_segment.stop += -sync_offset;
 
-			pts_begin = GST_BUFFER_PTS(original_incoming_buffer);
-			pts_end = GST_BUFFER_PTS(original_incoming_buffer) + GST_BUFFER_DURATION(original_incoming_buffer);
+			sync_offset = 0;
+		}
 
-			gst_segment_init(&pts_clipping_segment, GST_FORMAT_TIME);
-			pts_clipping_segment.start = segment->start;
-			pts_clipping_segment.stop = segment->stop;
-			pts_clipping_segment.duration = -1;
+		if (!gst_segment_clip(&pts_clipping_segment, GST_FORMAT_TIME, pts_begin, pts_end, &clipped_pts_begin, &clipped_pts_end))
+		{
+			GST_DEBUG_OBJECT(self, "incoming buffer is fully outside of the current segment; dropping buffer");
+			goto finish;
+		}
 
-			ts_offset = gst_base_sink_get_ts_offset(basesink);
-			render_delay = gst_base_sink_get_render_delay(basesink);
-			sync_offset = ts_offset - render_delay;
+		GST_LOG_OBJECT(
+			self, "original buffer begin/end PTS: %" GST_TIME_FORMAT "/%" GST_TIME_FORMAT "  clipped begin/end PTS: %" GST_TIME_FORMAT "/%" GST_TIME_FORMAT,
+			GST_TIME_ARGS(pts_begin), GST_TIME_ARGS(pts_end),
+			GST_TIME_ARGS(clipped_pts_begin), GST_TIME_ARGS(clipped_pts_end)
+		);
+
+		if (GST_CLOCK_TIME_IS_VALID(clipped_pts_begin) && GST_CLOCK_TIME_IS_VALID(clipped_pts_end))
+		{
+			GstClockTime running_time_pts_begin, running_time_pts_end;
+			gsize clipped_begin_frames = 0, clipped_end_frames = 0;
+			gsize original_num_frames;
+			GstClockTime begin_clip_duration, end_clip_duration;
+			GstClockTime pw_base_time;
+
+			running_time_pts_begin = gst_segment_to_running_time(segment, GST_FORMAT_TIME, clipped_pts_begin);
+			running_time_pts_end = gst_segment_to_running_time(segment, GST_FORMAT_TIME, clipped_pts_end);
+
+			pw_base_time = GST_ELEMENT_CAST(self)->base_time;
+
+			if (GST_CLOCK_TIME_IS_VALID(self->last_running_time_pts_end))
+			{
+				GstClockTimeDiff discontinuity = GST_CLOCK_DIFF(self->last_running_time_pts_end, running_time_pts_begin);
+
+				// TODO: Accumulate discontinuity, and only perform compensation
+				// if the accumulated discontinuity is nonzero after a while.
+				// This filters out cases of alternating discontinuities, like
+				// +1ms now -1ms next +1ms next -1ms next etc.
+
+				if (G_UNLIKELY(ABS(discontinuity) > self->alignment_threshold) || ((discontinuity != 0) && force_discontinuity_handling))
+				{
+					/* A positive discontinuity value means that there is a gap between
+					 * this buffer and the last one. If we are playing contiguous
+					 * audio data, we can fill the gap with silence frames.
+					 * A negative discontinuity value means that the last N nanoseconds
+					 * of the last buffer overlap with the first N nanoseconds of this
+					 * buffer. We have to throw away the first N nanoseconds of the
+					 * new buffer in that case. (N = ABS(discontinuity)) */
+
+					if (discontinuity > 0)
+					{
+						/* Shift the running-time PTS to make room for the extra silence frames. */
+						running_time_pts_begin += discontinuity;
+						running_time_pts_end += discontinuity;
+						num_silence_frames_to_insert = gst_pw_audio_format_calculate_num_frames_from_duration(&(self->pw_audio_format), discontinuity);
+						GST_DEBUG_OBJECT(
+							self,
+							"discontinuity detected (%" GST_TIME_FORMAT "); need to insert %" G_GSIZE_FORMAT " silence frame(s) to compensate",
+							GST_TIME_ARGS(discontinuity),
+							num_silence_frames_to_insert
+						);
+					}
+					else
+					{
+						/* We need to clip the first N nanoseconds (N = -discontinuity), since these
+						 * overlap with already played data. The start of the remaining data needs to
+						 * be shifted into the future by (-discontinuity) nanoseconds to align it with
+						 * the previous data and to account for the clipped amount. running_time_pts_end
+						 * is not modified, however, since the overall duration of the data to play is
+						 * reduced by (-discontinuity) nanoseconds by the clipping. */
+						running_time_pts_begin += (-discontinuity);
+						clipped_pts_begin += (-discontinuity);
+						GST_DEBUG_OBJECT(
+							self,
+							"discontinuity detected (%" GST_TIME_FORMAT "); need to clip this (positive) amount of nanoseconds from the beginning of the gstbuffer",
+							GST_TIME_ARGS(discontinuity)
+						);
+					}
+				}
+			}
+
+			g_assert(GST_CLOCK_TIME_IS_VALID(running_time_pts_begin));
+			g_assert(GST_CLOCK_TIME_IS_VALID(running_time_pts_end));
+
+			begin_clip_duration = clipped_pts_begin - pts_begin;
+			end_clip_duration = pts_end - clipped_pts_end;
+
+			clipped_begin_frames = gst_pw_audio_format_calculate_num_frames_from_duration(&(self->pw_audio_format), begin_clip_duration);
+			clipped_end_frames = gst_pw_audio_format_calculate_num_frames_from_duration(&(self->pw_audio_format), end_clip_duration);
+
+			original_num_frames = gst_buffer_get_size(original_incoming_buffer) / stride;
 
 			GST_LOG_OBJECT(
 				self,
-				"ts-offset: %" G_GINT64_FORMAT " render delay: %" GST_TIME_FORMAT " => sync offset: %" G_GINT64_FORMAT,
-				ts_offset,
-				GST_TIME_ARGS(render_delay),
-				sync_offset
+				"clip begin/end duration: %" GST_TIME_FORMAT "/%" GST_TIME_FORMAT "  clipped begin/end frames: %" G_GSIZE_FORMAT "/%" G_GSIZE_FORMAT " original num frames: %" G_GSIZE_FORMAT,
+				GST_TIME_ARGS(begin_clip_duration), GST_TIME_ARGS(end_clip_duration),
+				clipped_begin_frames, clipped_end_frames,
+				original_num_frames
 			);
 
-			if (G_UNLIKELY(sync_offset < 0))
+			/* Fringe case: The buffer is completely clipped, so we just drop it. */
+			if (G_UNLIKELY((clipped_begin_frames >= original_num_frames) || (clipped_end_frames >= original_num_frames)))
 			{
-				pts_clipping_segment.start += -sync_offset;
-				if (pts_clipping_segment.stop != (guint64)(-1))
-					pts_clipping_segment.stop += -sync_offset;
-
-				sync_offset = 0;
-			}
-
-			if (!gst_segment_clip(&pts_clipping_segment, GST_FORMAT_TIME, pts_begin, pts_end, &clipped_pts_begin, &clipped_pts_end))
-			{
-				GST_DEBUG_OBJECT(self, "incoming buffer is fully outside of the current segment; dropping buffer");
+				GST_DEBUG_OBJECT(self, "clipped begin/end frames fully clip the buffer; dropping buffer");
 				goto finish;
 			}
 
-			GST_LOG_OBJECT(
-				self, "original buffer begin/end PTS: %" GST_TIME_FORMAT "/%" GST_TIME_FORMAT "  clipped begin/end PTS: %" GST_TIME_FORMAT "/%" GST_TIME_FORMAT,
-				GST_TIME_ARGS(pts_begin), GST_TIME_ARGS(pts_end),
-				GST_TIME_ARGS(clipped_pts_begin), GST_TIME_ARGS(clipped_pts_end)
+			incoming_buffer_copy = gst_buffer_copy_region(
+				original_incoming_buffer,
+				GST_BUFFER_COPY_MEMORY,
+				clipped_begin_frames * stride,
+				gst_buffer_get_size(original_incoming_buffer) - (clipped_begin_frames + clipped_end_frames) * stride
 			);
 
-			if (GST_CLOCK_TIME_IS_VALID(clipped_pts_begin) && GST_CLOCK_TIME_IS_VALID(clipped_pts_end))
-			{
-				GstClockTime running_time_pts_begin, running_time_pts_end;
-				gsize clipped_begin_frames = 0, clipped_end_frames = 0;
-				gsize original_num_frames;
-				GstClockTime begin_clip_duration, end_clip_duration;
-				GstClockTime pw_base_time;
+			/* Set the incoming_buffer_copy's timestamp, translated to clock-time
+			 * by adding pw_base_time to running_time_pts_begin. */
+			GST_BUFFER_PTS(incoming_buffer_copy) = pw_base_time + running_time_pts_begin;
+			GST_BUFFER_DURATION(incoming_buffer_copy) = clipped_pts_end - clipped_pts_begin;
 
-				running_time_pts_begin = gst_segment_to_running_time(segment, GST_FORMAT_TIME, clipped_pts_begin);
-				running_time_pts_end = gst_segment_to_running_time(segment, GST_FORMAT_TIME, clipped_pts_end);
+			GST_LOG_OBJECT(
+				self,
+				"running time begin/end PTS: %" GST_TIME_FORMAT "/%" GST_TIME_FORMAT,
+				GST_TIME_ARGS(running_time_pts_begin), GST_TIME_ARGS(running_time_pts_end)
+			);
 
-				pw_base_time = GST_ELEMENT_CAST(self)->base_time;
-
-				if (GST_CLOCK_TIME_IS_VALID(self->last_running_time_pts_end))
-				{
-					GstClockTimeDiff discontinuity = GST_CLOCK_DIFF(self->last_running_time_pts_end, running_time_pts_begin);
-
-					// TODO: Accumulate discontinuity, and only perform compensation
-					// if the accumulated discontinuity is nonzero after a while.
-					// This filters out cases of alternating discontinuities, like
-					// +1ms now -1ms next +1ms next -1ms next etc.
-
-					if (G_UNLIKELY(ABS(discontinuity) > self->alignment_threshold) || ((discontinuity != 0) && force_discontinuity_handling))
-					{
-						/* A positive discontinuity value means that there is a gap between
-						 * this buffer and the last one. If we are playing contiguous
-						 * audio data, we can fill the gap with silence frames.
-						 * A negative discontinuity value means that the last N nanoseconds
-						 * of the last buffer overlap with the first N nanoseconds of this
-						 * buffer. We have to throw away the first N nanoseconds of the
-						 * new buffer in that case. (N = ABS(discontinuity)) */
-
-						if (discontinuity > 0)
-						{
-							/* Shift the running-time PTS to make room for the extra silence frames. */
-							running_time_pts_begin += discontinuity;
-							running_time_pts_end += discontinuity;
-							num_silence_frames_to_insert = gst_pw_audio_format_calculate_num_frames_from_duration(&(self->pw_audio_format), discontinuity);
-							GST_DEBUG_OBJECT(
-								self,
-								"discontinuity detected (%" GST_TIME_FORMAT "); need to insert %" G_GSIZE_FORMAT " silence frame(s) to compensate",
-								GST_TIME_ARGS(discontinuity),
-								num_silence_frames_to_insert
-							);
-						}
-						else
-						{
-							/* We need to clip the first N nanoseconds (N = -discontinuity), since these
-							 * overlap with already played data. The start of the remaining data needs to
-							 * be shifted into the future by (-discontinuity) nanoseconds to align it with
-							 * the previous data and to account for the clipped amount. running_time_pts_end
-							 * is not modified, however, since the overall duration of the data to play is
-							 * reduced by (-discontinuity) nanoseconds by the clipping. */
-							running_time_pts_begin += (-discontinuity);
-							clipped_pts_begin += (-discontinuity);
-							GST_DEBUG_OBJECT(
-								self,
-								"discontinuity detected (%" GST_TIME_FORMAT "); need to clip this (positive) amount of nanoseconds from the beginning of the gstbuffer",
-								GST_TIME_ARGS(discontinuity)
-							);
-						}
-					}
-				}
-
-				g_assert(GST_CLOCK_TIME_IS_VALID(running_time_pts_begin));
-				g_assert(GST_CLOCK_TIME_IS_VALID(running_time_pts_end));
-
-				begin_clip_duration = clipped_pts_begin - pts_begin;
-				end_clip_duration = pts_end - clipped_pts_end;
-
-				clipped_begin_frames = gst_pw_audio_format_calculate_num_frames_from_duration(&(self->pw_audio_format), begin_clip_duration);
-				clipped_end_frames = gst_pw_audio_format_calculate_num_frames_from_duration(&(self->pw_audio_format), end_clip_duration);
-
-				original_num_frames = gst_buffer_get_size(original_incoming_buffer) / stride;
-
-				GST_LOG_OBJECT(
-					self,
-					"clip begin/end duration: %" GST_TIME_FORMAT "/%" GST_TIME_FORMAT "  clipped begin/end frames: %" G_GSIZE_FORMAT "/%" G_GSIZE_FORMAT " original num frames: %" G_GSIZE_FORMAT,
-					GST_TIME_ARGS(begin_clip_duration), GST_TIME_ARGS(end_clip_duration),
-					clipped_begin_frames, clipped_end_frames,
-					original_num_frames
-				);
-	
-				/* Fringe case: The buffer is completely clipped, so we just drop it. */
-				if (G_UNLIKELY((clipped_begin_frames >= original_num_frames) || (clipped_end_frames >= original_num_frames)))
-				{
-					GST_DEBUG_OBJECT(self, "clipped begin/end frames fully clip the buffer; dropping buffer");
-					goto finish;
-				}
-
-				incoming_buffer_copy = gst_buffer_copy_region(
-					original_incoming_buffer,
-					GST_BUFFER_COPY_MEMORY,
-					clipped_begin_frames * stride,
-					gst_buffer_get_size(original_incoming_buffer) - (clipped_begin_frames + clipped_end_frames) * stride
-				);
-
-				/* Set the incoming_buffer_copy's timestamp, translated to clock-time
-				 * by adding pw_base_time to running_time_pts_begin. */
-				GST_BUFFER_PTS(incoming_buffer_copy) = pw_base_time + running_time_pts_begin;
-				GST_BUFFER_DURATION(incoming_buffer_copy) = clipped_pts_end - clipped_pts_begin;
-
-				GST_LOG_OBJECT(
-					self,
-					"running time begin/end PTS: %" GST_TIME_FORMAT "/%" GST_TIME_FORMAT,
-					GST_TIME_ARGS(running_time_pts_begin), GST_TIME_ARGS(running_time_pts_end)
-				);
-
-				GST_LOG_OBJECT(
-					self,
-					"base-time: %" GST_TIME_FORMAT "  clock-time clipped buffer PTS: %" GST_TIME_FORMAT "  clipped buffer duration: %" GST_TIME_FORMAT,
-					GST_TIME_ARGS(pw_base_time),
-					GST_TIME_ARGS(GST_BUFFER_PTS(incoming_buffer_copy)),
-					GST_TIME_ARGS(GST_BUFFER_DURATION(incoming_buffer_copy))
-				);
-
-				buffer_can_be_played_in_sync = TRUE;
-			}
-			else
-				GST_LOG_OBJECT(self, "clipped begin/end PTS invalid after clipping; not adjusting buffer timestamp and duration, not playing in sync");
+			GST_LOG_OBJECT(
+				self,
+				"base-time: %" GST_TIME_FORMAT "  clock-time clipped buffer PTS: %" GST_TIME_FORMAT "  clipped buffer duration: %" GST_TIME_FORMAT,
+				GST_TIME_ARGS(pw_base_time),
+				GST_TIME_ARGS(GST_BUFFER_PTS(incoming_buffer_copy)),
+				GST_TIME_ARGS(GST_BUFFER_DURATION(incoming_buffer_copy))
+			);
+		}
+		else
+		{
+			GST_LOG_OBJECT(self, "clipped begin/end PTS invalid after clipping; not adjusting buffer timestamp and duration, not playing in sync");
+			sync_enabled = FALSE;
 		}
 	}
-	else
-		GST_LOG_OBJECT(self, "synced playback disabled; not adjusting buffer timestamp and duration");
 
-	if (!buffer_can_be_played_in_sync)
+	if (!sync_enabled)
 	{
 		/* This location is reached in these cases:
 		 *
