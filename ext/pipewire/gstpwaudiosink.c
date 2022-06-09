@@ -181,6 +181,11 @@ struct _GstPwAudioSink
 	 * feedback (see the io_changed() callback). Initially, the timestamps are
 	 * unadjusted and equal those of the system clock. */
 	GstPwStreamClock *stream_clock;
+	/* True if the stream_clock is set as the pipeline clock, or in other words,
+	 * is GST_ELEMENT_CLOCK(sink) == stream_clock .
+	 * Access to this field requires the audio_buffer_queue object lock to be taken
+	 * if the pw_stream is connected. */
+	gboolean stream_clock_is_pipeline_clock;
 
 	/** PipeWire specifics **/
 
@@ -224,6 +229,7 @@ static void gst_pw_audio_sink_get_property(GObject *object, guint prop_id, GValu
 
 static GstStateChangeReturn gst_pw_audio_sink_change_state(GstElement *element, GstStateChange transition);
 static GstClock* gst_pw_audio_sink_provide_clock(GstElement *element);
+static gboolean gst_pw_audio_sink_set_clock(GstElement *element, GstClock *clock);
 static gboolean gst_pw_audio_sink_send_event(GstElement *element, GstEvent *event);
 static gboolean gst_pw_audio_sink_query(GstElement *element, GstQuery *query);
 
@@ -322,6 +328,7 @@ static void gst_pw_audio_sink_class_init(GstPwAudioSinkClass *klass)
 
 	element_class->change_state  = GST_DEBUG_FUNCPTR(gst_pw_audio_sink_change_state);
 	element_class->provide_clock = GST_DEBUG_FUNCPTR(gst_pw_audio_sink_provide_clock);
+	element_class->set_clock     = GST_DEBUG_FUNCPTR(gst_pw_audio_sink_set_clock);
 	element_class->send_event    = GST_DEBUG_FUNCPTR(gst_pw_audio_sink_send_event);
 	element_class->query         = GST_DEBUG_FUNCPTR(gst_pw_audio_sink_query);
 
@@ -489,6 +496,7 @@ static void gst_pw_audio_sink_init(GstPwAudioSink *self)
 
 	self->stream_clock = gst_pw_stream_clock_new();
 	g_assert(self->stream_clock != NULL);
+	self->stream_clock_is_pipeline_clock = FALSE;
 
 	self->pipewire_core = gst_pipewire_core_new();
 	self->stream = NULL;
@@ -746,6 +754,25 @@ static GstClock* gst_pw_audio_sink_provide_clock(GstElement *element)
 	GST_OBJECT_UNLOCK(self);
 
 	return clock;
+}
+
+
+static gboolean gst_pw_audio_sink_set_clock(GstElement *element, GstClock *clock)
+{
+	GstPwAudioSink *self = GST_PW_AUDIO_SINK(element);
+
+	LOCK_AUDIO_BUFFER_QUEUE(self);
+	self->stream_clock_is_pipeline_clock = (clock == GST_CLOCK_CAST(self->stream_clock));
+	UNLOCK_AUDIO_BUFFER_QUEUE(self);
+
+	GST_DEBUG_OBJECT(
+		self,
+		"pipeline is setting clock %" GST_PTR_FORMAT " as the element's clock; is the PW stream clock: %d",
+		(gpointer)clock,
+		self->stream_clock_is_pipeline_clock
+	);
+
+	return GST_ELEMENT_CLASS(gst_pw_audio_sink_parent_class)->set_clock(element, clock);
 }
 
 
@@ -1266,6 +1293,8 @@ static gboolean gst_pw_audio_sink_stop(GstBaseSink *basesink)
 	self->latency = 0;
 	self->notify_upstream_about_stream_delay = 0;
 	self->quantum_size = 0;
+
+	self->stream_clock_is_pipeline_clock = FALSE;
 
 	return TRUE;
 }
