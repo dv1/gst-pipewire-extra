@@ -2363,7 +2363,7 @@ static void gst_pw_audio_sink_contiguous_on_process_stream(void *data)
 		inner_spa_data->chunk->size = num_silence_bytes;
 		inner_spa_data->chunk->stride = stride;
 
-		memset(inner_spa_data->data, 0, num_silence_bytes);
+		gst_pw_audio_format_write_silence_frames(&(self->pw_audio_format), inner_spa_data->data, num_silence_frames);
 
 		g_cond_signal(&(self->audio_buffer_queue_cond));
 	}
