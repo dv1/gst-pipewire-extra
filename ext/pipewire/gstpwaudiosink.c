@@ -81,6 +81,7 @@ enum
 	PROP_APP_NAME,
 	PROP_NODE_NAME,
 	PROP_NODE_DESCRIPTION,
+	PROP_CACHE_PROBED_CAPS,
 
 	PROP_LAST
 };
@@ -95,6 +96,7 @@ enum
 #define DEFAULT_APP_NAME NULL
 #define DEFAULT_NODE_NAME NULL
 #define DEFAULT_NODE_DESCRIPTION NULL
+#define DEFAULT_CACHE_PROBED_CAPS TRUE
 
 
 #define LOCK_AUDIO_BUFFER_QUEUE(pw_audio_sink) GST_OBJECT_LOCK((pw_audio_sink)->audio_buffer_queue)
@@ -121,6 +123,7 @@ struct _GstPwAudioSink
 	gchar *app_name;
 	gchar *node_name;
 	gchar *node_description;
+	gboolean cache_probed_caps;
 
 	/** Playback format **/
 
@@ -128,6 +131,7 @@ struct _GstPwAudioSink
 	GstPwAudioFormat pw_audio_format;
 	GstPwAudioFormatProbe *format_probe;
 	GMutex probe_process_mutex;
+	GstCaps *cached_probed_caps;
 
 	/** Contiguous data **/
 
@@ -456,6 +460,18 @@ static void gst_pw_audio_sink_class_init(GstPwAudioSinkClass *klass)
 		)
 	);
 
+	g_object_class_install_property(
+		object_class,
+		PROP_CACHE_PROBED_CAPS,
+		g_param_spec_boolean(
+			"cache-probed-caps",
+			"Cache proped caps",
+			"Cache the caps that get probed during the first caps query after the element started",
+			DEFAULT_CACHE_PROBED_CAPS,
+			(GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)
+		)
+	);
+
 	gst_element_class_set_static_metadata(
 		element_class,
 		"pwaudiosink",
@@ -476,10 +492,12 @@ static void gst_pw_audio_sink_init(GstPwAudioSink *self)
 	self->app_name = g_strdup(DEFAULT_APP_NAME);
 	self->node_name = g_strdup(DEFAULT_NODE_NAME);
 	self->node_description = g_strdup(DEFAULT_NODE_DESCRIPTION);
+	self->cache_probed_caps = DEFAULT_CACHE_PROBED_CAPS;
 
 	self->sink_caps = NULL;
 	self->format_probe = NULL;
 	g_mutex_init(&(self->probe_process_mutex));
+	self->cached_probed_caps = NULL;
 
 	self->audio_buffer_queue = gst_pw_audio_queue_new();
 	g_assert(self->audio_buffer_queue != NULL);
@@ -616,6 +634,12 @@ static void gst_pw_audio_sink_set_property(GObject *object, guint prop_id, GValu
 			GST_OBJECT_UNLOCK(self);
 			break;
 
+		case PROP_CACHE_PROBED_CAPS:
+			GST_OBJECT_LOCK(self);
+			self->cache_probed_caps = g_value_get_boolean(value);
+			GST_OBJECT_UNLOCK(self);
+			break;
+
 		default:
 			G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
 			break;
@@ -678,6 +702,12 @@ static void gst_pw_audio_sink_get_property(GObject *object, guint prop_id, GValu
 		case PROP_NODE_DESCRIPTION:
 			GST_OBJECT_LOCK(self);
 			g_value_set_string(value, self->node_description);
+			GST_OBJECT_UNLOCK(self);
+			break;
+
+		case PROP_CACHE_PROBED_CAPS:
+			GST_OBJECT_LOCK(self);
+			g_value_set_boolean(value, self->cache_probed_caps);
 			GST_OBJECT_UNLOCK(self);
 			break;
 
@@ -1031,9 +1061,21 @@ error:
 static GstCaps* gst_pw_audio_sink_get_caps(GstBaseSink *basesink, GstCaps *filter)
 {
 	GstPwAudioSink *self = GST_PW_AUDIO_SINK(basesink);
-	GstCaps *available_sinkcaps;
+	GstCaps *available_sinkcaps = NULL;
+	gboolean did_probe_caps = FALSE;
 
 	GST_DEBUG_OBJECT(self, "new get-caps query");
+
+	GST_OBJECT_LOCK(self);
+	if (self->cache_probed_caps && (self->cached_probed_caps != NULL))
+	{
+		available_sinkcaps = gst_caps_ref(self->cached_probed_caps);
+		GST_DEBUG_OBJECT(self, "returning cached get-caps query result: %" GST_PTR_FORMAT, (gpointer)available_sinkcaps);
+	}
+	GST_OBJECT_UNLOCK(self);
+
+	if (available_sinkcaps != NULL)
+		goto finish;
 
 	if (self->pipewire_core->core != NULL)
 	{
@@ -1095,6 +1137,8 @@ static GstCaps* gst_pw_audio_sink_get_caps(GstBaseSink *basesink, GstCaps *filte
 			gst_caps_unref(available_sinkcaps);
 			return gst_pw_audio_format_get_template_caps();
 		}
+
+		did_probe_caps = TRUE;
 	}
 	else
 	{
@@ -1123,6 +1167,12 @@ static GstCaps* gst_pw_audio_sink_get_caps(GstBaseSink *basesink, GstCaps *filte
 		GST_DEBUG_OBJECT(self, "  final caps for query:           %" GST_PTR_FORMAT, (gpointer)available_sinkcaps);
 	}
 
+	GST_OBJECT_LOCK(self);
+	if (self->cache_probed_caps && did_probe_caps)
+		gst_caps_replace(&(self->cached_probed_caps), available_sinkcaps);
+	GST_OBJECT_UNLOCK(self);
+
+finish:
 	return available_sinkcaps;
 }
 
@@ -1275,6 +1325,8 @@ static gboolean gst_pw_audio_sink_stop(GstBaseSink *basesink)
 		gst_object_unref(GST_OBJECT(self->format_probe));
 		self->format_probe = NULL;
 	}
+
+	gst_caps_replace(&(self->cached_probed_caps), NULL);
 
 	self->spa_position = NULL;
 	self->spa_rate_match = NULL;
