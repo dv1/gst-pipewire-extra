@@ -941,15 +941,11 @@ gboolean gst_pw_audio_format_build_spa_pod_for_probing(
 			*pod = spa_format_audio_raw_build(
 				&builder, SPA_PARAM_EnumFormat,
 				&SPA_AUDIO_INFO_RAW_INIT(
-					/* TODO: Initially, format SPA_AUDIO_FORMAT_UNKNOWN channels 0 rate 0
-					 * was used here, but this causes the probing stream to not reach any
-					 * state beyond paused, not even the error state, so we currently
-					 * have to use a valid probing state. We pick S16LE 48 kHz mono,
-					 * since this is widely supported. But it would be better to not
-					 * have to rely on that. */
-					.format = SPA_AUDIO_FORMAT_S16_LE,
-					.channels = 1,
-					.rate = 48000
+					/* Fixate the sample format, but leave the rest unfixated.
+					 * This is sufficient for probing. */
+					.format = SPA_AUDIO_FORMAT_S16,
+					.channels = 0,
+					.rate = 0
 				)
 			);
 			break;
@@ -959,11 +955,6 @@ gboolean gst_pw_audio_format_build_spa_pod_for_probing(
 			*pod = spa_format_audio_dsd_build(
 				&builder, SPA_PARAM_EnumFormat,
 				&SPA_AUDIO_INFO_DSD_INIT(
-					/* TODO: On DSD capable DACs, see if we can use these unknown/zero values
-					 * for probing, or if this causes the stream state change to hang like in
-					 * the PCM case (= we had to pick S16LE 48 kHz mono instead of "unknown"
-					 * for PCM probing, otherwise the stream state would get stuck at paused,
-					 * and never progress to streaming or error). */
 					.bitorder = SPA_PARAM_BITORDER_unknown,
 					.interleave = 0,
 					.channels = 0,
@@ -1215,9 +1206,14 @@ struct _GstPwAudioFormatProbe
 	struct spa_pod const *format_params[1];
 	guint8 builder_buffer[AUDIO_FORMAT_PROBE_BUILDER_BUFFER_SIZE];
 
+	GstPwAudioFormat pw_audio_format;
+
 	enum pw_stream_state last_state;
 
 	gboolean cancelled;
+
+	guint64 quantum_size;
+	gint32 stride;
 };
 
 
@@ -1233,13 +1229,19 @@ G_DEFINE_TYPE(GstPwAudioFormatProbe, gst_pw_audio_format_probe, GST_TYPE_OBJECT)
 static void gst_pw_audio_format_probe_dispose(GObject *object);
 static void gst_pw_audio_format_probe_finalize(GObject *object);
 
-static void pw_on_probing_state_changed(void *data, enum pw_stream_state old_state, enum pw_stream_state new_state, const char *error);
+static void gst_pw_probing_state_changed(void *data, enum pw_stream_state old_state, enum pw_stream_state new_state, const char *error);
+static void gst_pw_probing_param_changed(void *data, uint32_t id, const struct spa_pod *param);
+static void gst_pw_probing_io_changed(void *data, uint32_t id, void *area, uint32_t size);
+static void gst_pw_probing_process_stream(void *data);
 
 
 static const struct pw_stream_events probing_stream_events =
 {
 	PW_VERSION_STREAM_EVENTS,
-	.state_changed = pw_on_probing_state_changed
+	.state_changed = gst_pw_probing_state_changed,
+	.param_changed = gst_pw_probing_param_changed,
+	.io_changed = gst_pw_probing_io_changed,
+	.process = gst_pw_probing_process_stream
 };
 
 
@@ -1289,7 +1291,7 @@ static void gst_pw_audio_format_probe_finalize(GObject *object)
 }
 
 
-static void pw_on_probing_state_changed(void *data, enum pw_stream_state old_state, enum pw_stream_state new_state, const char *error)
+static void gst_pw_probing_state_changed(void *data, enum pw_stream_state old_state, enum pw_stream_state new_state, const char *error)
 {
 	GstPwAudioFormatProbe *self = GST_PW_AUDIO_FORMAT_PROBE_CAST(data);
 
@@ -1312,9 +1314,98 @@ static void pw_on_probing_state_changed(void *data, enum pw_stream_state old_sta
 			g_mutex_unlock(&(self->mutex));
 			break;
 		}
+
 		default:
 			break;
 	}
+}
+
+
+static void gst_pw_probing_param_changed(void *data, uint32_t id, const struct spa_pod *param)
+{
+	GstPwAudioFormatProbe *self = GST_PW_AUDIO_FORMAT_PROBE_CAST(data);
+
+	if ((id != SPA_PARAM_Format) || (param == NULL))
+		return;
+
+	GST_DEBUG_OBJECT(self, "format param changed; parsing and analyzing");
+
+	gst_pw_audio_format_from_spa_pod_with_format_param(
+		&(self->pw_audio_format),
+		GST_OBJECT_CAST(self),
+		param
+	);
+
+	self->stride = gst_pw_audio_format_get_stride(&(self->pw_audio_format));
+}
+
+
+static void gst_pw_probing_io_changed(void *data, uint32_t id, void *area, uint32_t size)
+{
+	GstPwAudioFormatProbe *self = GST_PW_AUDIO_FORMAT_PROBE_CAST(data);
+
+	switch (id)
+	{
+		case SPA_IO_Position:
+		{
+			struct spa_io_position *position = (struct spa_io_position *)area;
+			if (position != NULL)
+			{
+				self->quantum_size = position->clock.duration;
+				GST_DEBUG_OBJECT(
+					self,
+					"got new quantum size %" G_GUINT64_FORMAT " from clock duration in new SPA IO position",
+					self->quantum_size
+				);
+			}
+
+			break;
+		}
+
+		default:
+			break;
+	}
+}
+
+
+static void gst_pw_probing_process_stream(void *data)
+{
+	GstPwAudioFormatProbe *self = GST_PW_AUDIO_FORMAT_PROBE_CAST(data);
+	struct pw_buffer *pw_buf;
+	struct spa_data *inner_spa_data;
+
+	pw_buf = pw_stream_dequeue_buffer(self->probing_stream);
+	if (G_UNLIKELY(pw_buf == NULL))
+	{
+		GST_WARNING_OBJECT(self, "there are no PipeWire buffers to dequeue; cannot process anything");
+		return;
+	}
+
+	g_assert(pw_buf->buffer != NULL);
+
+	if (G_UNLIKELY(pw_buf->buffer->n_datas == 0))
+	{
+		GST_WARNING_OBJECT(self, "dequeued PipeWire buffer has no data");
+		goto finish;
+	}
+
+	inner_spa_data = &(pw_buf->buffer->datas[0]);
+	if (G_UNLIKELY(inner_spa_data->data == NULL))
+	{
+		GST_WARNING_OBJECT(self, "dequeued PipeWire buffer has no mapped data pointer");
+		goto finish;
+	}
+
+	inner_spa_data->chunk->offset = 0;
+	inner_spa_data->chunk->size = self->quantum_size * self->stride;
+	inner_spa_data->chunk->stride = self->stride;
+
+	GST_TRACE_OBJECT(self, "producing %" G_GSIZE_FORMAT " byte(s) of silence", (gsize)(inner_spa_data->chunk->size));
+
+	gst_pw_audio_format_write_silence_frames(&(self->pw_audio_format), inner_spa_data->data, self->quantum_size);
+
+finish:
+	pw_stream_queue_buffer(self->probing_stream, pw_buf);
 }
 
 
