@@ -78,6 +78,7 @@
 
 #include <spa/param/audio/format-utils.h>
 #include <spa/pod/pod.h>
+#include <spa/utils/result.h>
 
 #pragma GCC diagnostic pop
 
@@ -764,6 +765,134 @@ gboolean gst_pw_audio_format_to_spa_pod(
 		// TODO: Add code for more non-PCM types here
 
 		default:
+			goto error;
+	}
+
+	return TRUE;
+
+error:
+	return FALSE;
+}
+
+
+gboolean gst_pw_audio_format_from_spa_pod_with_format_param(
+	GstPwAudioFormat *pw_audio_format,
+	GstObject *parent,
+	struct spa_pod const *format_param_pod
+)
+{
+	struct spa_audio_info info = { 0 };
+	int err;
+
+	if ((err = spa_format_parse(format_param_pod, &info.media_type, &info.media_subtype)) < 0)
+	{
+		GST_ERROR_OBJECT(parent, "could not parse format: %s (%d)", spa_strerror(err), -err);
+		goto error;
+	}
+
+	if (info.media_type != SPA_MEDIA_TYPE_audio)
+	{
+		GST_DEBUG_OBJECT(parent, "this isn't an audio format - ignoring");
+		goto error;
+	}
+
+	switch (info.media_subtype)
+	{
+		case SPA_MEDIA_SUBTYPE_raw:
+		{
+			GstAudioFormat gst_audio_format;
+			GstAudioChannelPosition gst_channel_positions[SPA_AUDIO_MAX_CHANNELS];
+
+			if (spa_format_audio_raw_parse(format_param_pod, &(info.info.raw)) < 0)
+			{
+				GST_ERROR_OBJECT(parent, "could not parse PCM format: %s (%d)", spa_strerror(err), -err);
+				goto error;
+			}
+
+			switch (info.info.raw.format)
+			{
+				case SPA_AUDIO_FORMAT_S16_LE: gst_audio_format = GST_AUDIO_FORMAT_S16LE; break;
+				case SPA_AUDIO_FORMAT_S16_BE: gst_audio_format = GST_AUDIO_FORMAT_S16BE; break;
+				case SPA_AUDIO_FORMAT_S18_LE: gst_audio_format = GST_AUDIO_FORMAT_S18LE; break;
+				case SPA_AUDIO_FORMAT_S18_BE: gst_audio_format = GST_AUDIO_FORMAT_S18BE; break;
+				case SPA_AUDIO_FORMAT_S20_LE: gst_audio_format = GST_AUDIO_FORMAT_S20LE; break;
+				case SPA_AUDIO_FORMAT_S20_BE: gst_audio_format = GST_AUDIO_FORMAT_S20BE; break;
+				case SPA_AUDIO_FORMAT_S24_LE: gst_audio_format = GST_AUDIO_FORMAT_S24LE; break;
+				case SPA_AUDIO_FORMAT_S24_BE: gst_audio_format = GST_AUDIO_FORMAT_S24BE; break;
+				case SPA_AUDIO_FORMAT_S24_32_LE: gst_audio_format = GST_AUDIO_FORMAT_S24_32LE; break;
+				case SPA_AUDIO_FORMAT_S24_32_BE: gst_audio_format = GST_AUDIO_FORMAT_S24_32BE; break;
+				case SPA_AUDIO_FORMAT_S32_LE: gst_audio_format = GST_AUDIO_FORMAT_S32LE; break;
+				case SPA_AUDIO_FORMAT_S32_BE: gst_audio_format = GST_AUDIO_FORMAT_S32BE; break;
+
+				case SPA_AUDIO_FORMAT_U16_LE: gst_audio_format = GST_AUDIO_FORMAT_U16LE; break;
+				case SPA_AUDIO_FORMAT_U16_BE: gst_audio_format = GST_AUDIO_FORMAT_U16BE; break;
+				case SPA_AUDIO_FORMAT_U18_LE: gst_audio_format = GST_AUDIO_FORMAT_U18LE; break;
+				case SPA_AUDIO_FORMAT_U18_BE: gst_audio_format = GST_AUDIO_FORMAT_U18BE; break;
+				case SPA_AUDIO_FORMAT_U20_LE: gst_audio_format = GST_AUDIO_FORMAT_U20LE; break;
+				case SPA_AUDIO_FORMAT_U20_BE: gst_audio_format = GST_AUDIO_FORMAT_U20BE; break;
+				case SPA_AUDIO_FORMAT_U24_LE: gst_audio_format = GST_AUDIO_FORMAT_U24LE; break;
+				case SPA_AUDIO_FORMAT_U24_BE: gst_audio_format = GST_AUDIO_FORMAT_U24BE; break;
+				case SPA_AUDIO_FORMAT_U24_32_LE: gst_audio_format = GST_AUDIO_FORMAT_U24_32LE; break;
+				case SPA_AUDIO_FORMAT_U24_32_BE: gst_audio_format = GST_AUDIO_FORMAT_U24_32BE; break;
+				case SPA_AUDIO_FORMAT_U32_LE: gst_audio_format = GST_AUDIO_FORMAT_U32LE; break;
+				case SPA_AUDIO_FORMAT_U32_BE: gst_audio_format = GST_AUDIO_FORMAT_U32BE; break;
+
+				case SPA_AUDIO_FORMAT_F32_LE: gst_audio_format = GST_AUDIO_FORMAT_F32LE; break;
+				case SPA_AUDIO_FORMAT_F32_BE: gst_audio_format = GST_AUDIO_FORMAT_F32BE; break;
+				case SPA_AUDIO_FORMAT_F64_LE: gst_audio_format = GST_AUDIO_FORMAT_F64LE; break;
+				case SPA_AUDIO_FORMAT_F64_BE: gst_audio_format = GST_AUDIO_FORMAT_F64BE; break;
+
+				default:
+					GST_ERROR_OBJECT(parent, "unsupported SPA audio format %d", (gint)(info.info.raw.format));
+					goto error;
+			}
+
+			spa_to_gst_channel_positions(info.info.raw.position, gst_channel_positions, info.info.raw.channels);
+
+			pw_audio_format->audio_type = GST_PIPEWIRE_AUDIO_TYPE_PCM;
+
+			gst_audio_info_set_format(
+				&(pw_audio_format->info.pcm_audio_info),
+				gst_audio_format,
+				info.info.raw.rate,
+				info.info.raw.channels,
+				gst_channel_positions
+			);
+
+			break;
+		}
+
+		case SPA_MEDIA_SUBTYPE_dsd:
+		{
+			if (spa_format_audio_dsd_parse(format_param_pod, &(info.info.dsd)) < 0)
+			{
+				GST_ERROR_OBJECT(parent, "could not parse DSD format: %s (%d)", spa_strerror(err), -err);
+				goto error;
+			}
+
+			switch (info.info.dsd.interleave)
+			{
+				case 1: pw_audio_format->info.dsd_audio_info.format = GST_PIPEWIRE_DSD_FORMAT_DSD_U8; break;
+				case -2: pw_audio_format->info.dsd_audio_info.format = GST_PIPEWIRE_DSD_FORMAT_DSD_U16LE; break;
+				case +2: pw_audio_format->info.dsd_audio_info.format = GST_PIPEWIRE_DSD_FORMAT_DSD_U16BE; break;
+				case -4: pw_audio_format->info.dsd_audio_info.format = GST_PIPEWIRE_DSD_FORMAT_DSD_U32LE; break;
+				case +4: pw_audio_format->info.dsd_audio_info.format = GST_PIPEWIRE_DSD_FORMAT_DSD_U32BE; break;
+				default:
+					GST_ERROR_OBJECT(parent, "unsupported SPA DSD interleave quantity %" G_GINT32_FORMAT, (gint32)(info.info.dsd.interleave));
+					goto error;
+			}
+
+			pw_audio_format->info.dsd_audio_info.rate = info.info.dsd.rate;
+			pw_audio_format->info.dsd_audio_info.channels = info.info.dsd.channels;
+			spa_to_gst_channel_positions(info.info.dsd.position, pw_audio_format->info.dsd_audio_info.positions, info.info.dsd.channels);
+
+			pw_audio_format->audio_type = GST_PIPEWIRE_AUDIO_TYPE_DSD;
+
+			break;
+		}
+
+		default:
+			GST_ERROR_OBJECT(parent, "unsupported SPA media subtype %#010" G_GINT32_MODIFIER "x", (guint32)(info.media_subtype));
 			goto error;
 	}
 

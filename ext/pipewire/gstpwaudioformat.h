@@ -109,6 +109,11 @@ gboolean gst_pw_audio_format_to_spa_pod(
 	guint8 *builder_buffer, gsize builder_buffer_size,
 	struct spa_pod const **pod
 );
+gboolean gst_pw_audio_format_from_spa_pod_with_format_param(
+	GstPwAudioFormat *pw_audio_format,
+	GstObject *parent,
+	struct spa_pod const *format_param_pod
+);
 gboolean gst_pw_audio_format_build_spa_pod_for_probing(
 	GstPipewireAudioType audio_type,
 	guint8 *builder_buffer, gsize builder_buffer_size,
