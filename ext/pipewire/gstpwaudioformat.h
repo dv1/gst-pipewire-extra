@@ -54,6 +54,33 @@ typedef enum
 GstPipewireAudioType;
 
 
+// XXX: The DSD specific enum and struct are temporary until GStreamer upstream supports DSD
+
+typedef enum
+{
+	GST_PIPEWIRE_DSD_FORMAT_DSD_UNKNOWN,
+
+	GST_PIPEWIRE_DSD_FORMAT_DSD_U8,
+	GST_PIPEWIRE_DSD_FORMAT_DSD_U16LE,
+	GST_PIPEWIRE_DSD_FORMAT_DSD_U16BE,
+	GST_PIPEWIRE_DSD_FORMAT_DSD_U32LE,
+	GST_PIPEWIRE_DSD_FORMAT_DSD_U32BE
+}
+GstPipewireDsdFormat;
+
+GstPipewireDsdFormat gst_pipewire_dsd_format_from_string(gchar const *str);
+gchar const * gst_pipewire_dsd_format_to_string(GstPipewireDsdFormat format);
+guint gst_pipewire_dsd_format_get_width(GstPipewireDsdFormat format);
+
+typedef struct
+{
+	GstPipewireDsdFormat format;
+	gint rate;
+	gint channels;
+	GstAudioChannelPosition positions[64];
+}
+GstPipewireDsdInfo;
+
 typedef struct
 {
 	GstPipewireAudioType audio_type;
@@ -61,6 +88,7 @@ typedef struct
 	union
 	{
 		GstAudioInfo pcm_audio_info;
+		GstPipewireDsdInfo dsd_audio_info;
 	} info;
 }
 GstPwAudioFormat;
