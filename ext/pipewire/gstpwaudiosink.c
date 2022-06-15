@@ -980,9 +980,9 @@ static gboolean gst_pw_audio_sink_set_caps(GstBaseSink *basesink, GstCaps *caps)
 	/* Get a PW audio format out of the caps and initialize the POD
 	 * that is then passed to pw_stream_connect() to specify the
 	 * audio format params to the new PW stream. */
-	if (!gst_pw_audio_format_from_caps(&(self->pw_audio_format), GST_ELEMENT_CAST(self), caps))
+	if (!gst_pw_audio_format_from_caps(&(self->pw_audio_format), GST_OBJECT_CAST(self), caps))
 		goto error;
-	if (!gst_pw_audio_format_to_spa_pod(&(self->pw_audio_format), GST_ELEMENT_CAST(self), builder_buffer, sizeof(builder_buffer), params))
+	if (!gst_pw_audio_format_to_spa_pod(&(self->pw_audio_format), GST_OBJECT_CAST(self), builder_buffer, sizeof(builder_buffer), params))
 		goto error;
 
 	/* Pick the stream connection flags.

@@ -340,13 +340,13 @@ gboolean gst_pw_audio_format_data_is_contiguous(GstPipewireAudioType audio_type)
  *
  * Returns: TRUE if filling pw_audio_format with info from the caps was successful.
  */
-gboolean gst_pw_audio_format_from_caps(GstPwAudioFormat *pw_audio_format, GstElement *element, GstCaps *caps)
+gboolean gst_pw_audio_format_from_caps(GstPwAudioFormat *pw_audio_format, GstObject *parent, GstCaps *caps)
 {
 	GstStructure *fmt_structure;
 	gchar const *media_type;
 
 	g_assert(pw_audio_format != NULL);
-	g_assert(element != NULL);
+	g_assert(parent != NULL);
 	g_assert(caps != NULL);
 	g_assert(gst_caps_is_fixed(caps));
 
@@ -358,7 +358,7 @@ gboolean gst_pw_audio_format_from_caps(GstPwAudioFormat *pw_audio_format, GstEle
 		if (!gst_audio_info_from_caps(&(pw_audio_format->info.pcm_audio_info), caps))
 		{
 			GST_ERROR_OBJECT(
-				element,
+				parent,
 				"could not convert caps \"%" GST_PTR_FORMAT "\" to a PCM audio info structure",
 				(gpointer)caps
 			);
@@ -370,13 +370,7 @@ gboolean gst_pw_audio_format_from_caps(GstPwAudioFormat *pw_audio_format, GstEle
 	// TODO: Add code for non-PCM types here
 	else
 	{
-		GST_ELEMENT_ERROR(
-			element,
-			STREAM,
-			FORMAT,
-			("unsupported media type"),
-			("format media type: \"%s\"", media_type)
-		);
+		GST_ERROR_OBJECT(parent, "unsupported media type \"%s\"", media_type);
 		goto error;
 	}
 
@@ -410,7 +404,7 @@ error:
  */
 gboolean gst_pw_audio_format_to_spa_pod(
 	GstPwAudioFormat const *pw_audio_format,
-	GstElement *element,
+	GstObject *parent,
 	guint8 *builder_buffer, gsize builder_buffer_size,
 	struct spa_pod const **pod
 )
@@ -421,7 +415,7 @@ gboolean gst_pw_audio_format_to_spa_pod(
 #pragma GCC diagnostic pop
 
 	g_assert(pw_audio_format != NULL);
-	g_assert(element != NULL);
+	g_assert(parent != NULL);
 	g_assert(pod != NULL);
 
 	switch (pw_audio_format->audio_type)
@@ -471,18 +465,12 @@ gboolean gst_pw_audio_format_to_spa_pod(
 				case GST_AUDIO_FORMAT_F64BE: spa_audio_format = SPA_AUDIO_FORMAT_F64_BE; break;
 
 				default:
-					GST_ELEMENT_ERROR(
-						element,
-						STREAM,
-						FORMAT,
-						("unsupported audio format"),
-						("audio format: \"%s\"", gst_audio_format_to_string(gst_audio_format))
-					);
+					GST_ERROR_OBJECT(parent, "unsupported audio format \"%s\"", gst_audio_format_to_string(gst_audio_format));
 					goto error;
 			}
 
 			GST_DEBUG_OBJECT(
-				element,
+				parent,
 				"building SPA POD for PCM audio; params:  format: %s  sample rate: %d  num channels: %d",
 				gst_audio_format_to_string(gst_audio_format),
 				sample_rate,
