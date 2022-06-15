@@ -58,8 +58,10 @@ typedef struct
 {
 	GstPipewireAudioType audio_type;
 
-	/* PCM specifics */
-	GstAudioInfo pcm_audio_info;
+	union
+	{
+		GstAudioInfo pcm_audio_info;
+	} info;
 }
 GstPwAudioFormat;
 

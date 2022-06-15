@@ -355,7 +355,7 @@ gboolean gst_pw_audio_format_from_caps(GstPwAudioFormat *pw_audio_format, GstEle
 
 	if (g_strcmp0(media_type, "audio/x-raw") == 0)
 	{
-		if (!gst_audio_info_from_caps(&(pw_audio_format->pcm_audio_info), caps))
+		if (!gst_audio_info_from_caps(&(pw_audio_format->info.pcm_audio_info), caps))
 		{
 			GST_ERROR_OBJECT(
 				element,
@@ -433,9 +433,9 @@ gboolean gst_pw_audio_format_to_spa_pod(
 			gint sample_rate;
 			gint num_channels;
 
-			gst_audio_format = GST_AUDIO_INFO_FORMAT(&(pw_audio_format->pcm_audio_info));
-			sample_rate = GST_AUDIO_INFO_RATE(&(pw_audio_format->pcm_audio_info));
-			num_channels = GST_AUDIO_INFO_CHANNELS(&(pw_audio_format->pcm_audio_info));
+			gst_audio_format = GST_AUDIO_INFO_FORMAT(&(pw_audio_format->info.pcm_audio_info));
+			sample_rate = GST_AUDIO_INFO_RATE(&(pw_audio_format->info.pcm_audio_info));
+			num_channels = GST_AUDIO_INFO_CHANNELS(&(pw_audio_format->info.pcm_audio_info));
 
 			switch (gst_audio_format)
 			{
@@ -616,7 +616,7 @@ gsize gst_pw_audio_format_get_stride(GstPwAudioFormat const *pw_audio_format)
 	switch (pw_audio_format->audio_type)
 	{
 		case GST_PIPEWIRE_AUDIO_TYPE_PCM:
-			return GST_AUDIO_INFO_BPF(&(pw_audio_format->pcm_audio_info));
+			return GST_AUDIO_INFO_BPF(&(pw_audio_format->info.pcm_audio_info));
 
 		// TODO: Add code for non-PCM types here
 
@@ -651,10 +651,10 @@ gchar* gst_pw_audio_format_to_string(GstPwAudioFormat const *pw_audio_format)
 		{
 			return gst_info_strdup_printf(
 				"PCM: rate %d channels %d sample format %s bpf %d",
-				GST_AUDIO_INFO_RATE(&(pw_audio_format->pcm_audio_info)),
-				GST_AUDIO_INFO_CHANNELS(&(pw_audio_format->pcm_audio_info)),
-				gst_audio_format_to_string(GST_AUDIO_INFO_FORMAT(&(pw_audio_format->pcm_audio_info))),
-				GST_AUDIO_INFO_BPF(&(pw_audio_format->pcm_audio_info))
+				GST_AUDIO_INFO_RATE(&(pw_audio_format->info.pcm_audio_info)),
+				GST_AUDIO_INFO_CHANNELS(&(pw_audio_format->info.pcm_audio_info)),
+				gst_audio_format_to_string(GST_AUDIO_INFO_FORMAT(&(pw_audio_format->info.pcm_audio_info))),
+				GST_AUDIO_INFO_BPF(&(pw_audio_format->info.pcm_audio_info))
 			);
 		}
 
@@ -688,7 +688,7 @@ gsize gst_pw_audio_format_calculate_num_frames_from_duration(GstPwAudioFormat co
 	{
 		case GST_PIPEWIRE_AUDIO_TYPE_PCM:
 		{
-			GstAudioInfo const *info = &(pw_audio_format->pcm_audio_info);
+			GstAudioInfo const *info = &(pw_audio_format->info.pcm_audio_info);
 			return gst_util_uint64_scale_int(duration, GST_AUDIO_INFO_RATE(info), GST_SECOND);
 		}
 
@@ -719,7 +719,7 @@ GstClockTime gst_pw_audio_format_calculate_duration_from_num_frames(GstPwAudioFo
 	{
 		case GST_PIPEWIRE_AUDIO_TYPE_PCM:
 		{
-			GstAudioInfo const *info = &(pw_audio_format->pcm_audio_info);
+			GstAudioInfo const *info = &(pw_audio_format->info.pcm_audio_info);
 			return gst_util_uint64_scale_int(num_frames, GST_SECOND, GST_AUDIO_INFO_RATE(info));
 		}
 
@@ -754,14 +754,14 @@ void gst_pw_audio_format_write_silence_frames(GstPwAudioFormat const *pw_audio_f
 	{
 		case GST_PIPEWIRE_AUDIO_TYPE_PCM:
 		{
-			gint num_silence_bytes = num_silence_frames_to_write * GST_AUDIO_INFO_BPF(&(pw_audio_format->pcm_audio_info));
+			gint num_silence_bytes = num_silence_frames_to_write * GST_AUDIO_INFO_BPF(&(pw_audio_format->info.pcm_audio_info));
 #if GST_CHECK_VERSION(1, 20, 0)
 			/* gst_audio_format_fill_silence() was deprecated in GStreamer 1.20
 			 * in favor of gst_audio_format_fill_silence. See gst-plugins-base
 			 * commit 3ec795f613c6201790a75189de28bd5493c37d3b for details. */
-			gst_audio_format_info_fill_silence(pw_audio_format->pcm_audio_info.finfo, dest_frames, num_silence_bytes);
+			gst_audio_format_info_fill_silence(pw_audio_format->info.pcm_audio_info.finfo, dest_frames, num_silence_bytes);
 #else
-			gst_audio_format_fill_silence(pw_audio_format->pcm_audio_info.finfo, dest_frames, num_silence_bytes);
+			gst_audio_format_fill_silence(pw_audio_format->info.pcm_audio_info.finfo, dest_frames, num_silence_bytes);
 #endif
 			break;
 		}
