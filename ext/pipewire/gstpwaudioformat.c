@@ -191,6 +191,98 @@ static GstPipewireAudioTypeDetails const audio_type_details[GST_NUM_PIPEWIRE_AUD
 };
 
 
+static void spa_to_gst_channel_positions(uint32_t const *spa_channel_positions, GstAudioChannelPosition *gst_channel_positions, gint num_channels)
+{
+	gint channel_nr;
+
+	for (channel_nr = 0; channel_nr < num_channels; ++channel_nr)
+	{
+		switch (spa_channel_positions[channel_nr])
+		{
+			case SPA_AUDIO_CHANNEL_MONO: gst_channel_positions[channel_nr] = GST_AUDIO_CHANNEL_POSITION_MONO; break;
+			case SPA_AUDIO_CHANNEL_NA:   gst_channel_positions[channel_nr] = GST_AUDIO_CHANNEL_POSITION_INVALID; break;
+			case SPA_AUDIO_CHANNEL_FL:   gst_channel_positions[channel_nr] = GST_AUDIO_CHANNEL_POSITION_FRONT_LEFT; break;
+			case SPA_AUDIO_CHANNEL_FR:   gst_channel_positions[channel_nr] = GST_AUDIO_CHANNEL_POSITION_FRONT_RIGHT; break;
+			case SPA_AUDIO_CHANNEL_FC:   gst_channel_positions[channel_nr] = GST_AUDIO_CHANNEL_POSITION_FRONT_CENTER; break;
+			case SPA_AUDIO_CHANNEL_LFE:  gst_channel_positions[channel_nr] = GST_AUDIO_CHANNEL_POSITION_LFE1; break;
+			case SPA_AUDIO_CHANNEL_RL:   gst_channel_positions[channel_nr] = GST_AUDIO_CHANNEL_POSITION_REAR_LEFT; break;
+			case SPA_AUDIO_CHANNEL_RR:   gst_channel_positions[channel_nr] = GST_AUDIO_CHANNEL_POSITION_REAR_RIGHT; break;
+			case SPA_AUDIO_CHANNEL_FLC:  gst_channel_positions[channel_nr] = GST_AUDIO_CHANNEL_POSITION_FRONT_LEFT_OF_CENTER; break;
+			case SPA_AUDIO_CHANNEL_FRC:  gst_channel_positions[channel_nr] = GST_AUDIO_CHANNEL_POSITION_FRONT_RIGHT_OF_CENTER; break;
+			case SPA_AUDIO_CHANNEL_RC:   gst_channel_positions[channel_nr] = GST_AUDIO_CHANNEL_POSITION_REAR_CENTER; break;
+			case SPA_AUDIO_CHANNEL_LFE2: gst_channel_positions[channel_nr] = GST_AUDIO_CHANNEL_POSITION_LFE2; break;
+			case SPA_AUDIO_CHANNEL_SL:   gst_channel_positions[channel_nr] = GST_AUDIO_CHANNEL_POSITION_SIDE_LEFT; break;
+			case SPA_AUDIO_CHANNEL_SR:   gst_channel_positions[channel_nr] = GST_AUDIO_CHANNEL_POSITION_SIDE_RIGHT; break;
+			case SPA_AUDIO_CHANNEL_TFL:  gst_channel_positions[channel_nr] = GST_AUDIO_CHANNEL_POSITION_TOP_FRONT_LEFT; break;
+			case SPA_AUDIO_CHANNEL_TFR:  gst_channel_positions[channel_nr] = GST_AUDIO_CHANNEL_POSITION_TOP_FRONT_RIGHT; break;
+			case SPA_AUDIO_CHANNEL_TFC:  gst_channel_positions[channel_nr] = GST_AUDIO_CHANNEL_POSITION_TOP_FRONT_CENTER; break;
+			case SPA_AUDIO_CHANNEL_TC:   gst_channel_positions[channel_nr] = GST_AUDIO_CHANNEL_POSITION_TOP_CENTER; break;
+			case SPA_AUDIO_CHANNEL_TRL:  gst_channel_positions[channel_nr] = GST_AUDIO_CHANNEL_POSITION_TOP_REAR_LEFT; break;
+			case SPA_AUDIO_CHANNEL_TRR:  gst_channel_positions[channel_nr] = GST_AUDIO_CHANNEL_POSITION_TOP_REAR_RIGHT; break;
+			case SPA_AUDIO_CHANNEL_TSL:  gst_channel_positions[channel_nr] = GST_AUDIO_CHANNEL_POSITION_TOP_SIDE_LEFT; break;
+			case SPA_AUDIO_CHANNEL_TSR:  gst_channel_positions[channel_nr] = GST_AUDIO_CHANNEL_POSITION_TOP_SIDE_RIGHT; break;
+			case SPA_AUDIO_CHANNEL_TRC:  gst_channel_positions[channel_nr] = GST_AUDIO_CHANNEL_POSITION_TOP_REAR_CENTER; break;
+			case SPA_AUDIO_CHANNEL_BC:   gst_channel_positions[channel_nr] = GST_AUDIO_CHANNEL_POSITION_BOTTOM_FRONT_CENTER; break;
+			case SPA_AUDIO_CHANNEL_BLC:  gst_channel_positions[channel_nr] = GST_AUDIO_CHANNEL_POSITION_BOTTOM_FRONT_LEFT; break;
+			case SPA_AUDIO_CHANNEL_BRC:  gst_channel_positions[channel_nr] = GST_AUDIO_CHANNEL_POSITION_BOTTOM_FRONT_RIGHT; break;
+			case SPA_AUDIO_CHANNEL_FLW:  gst_channel_positions[channel_nr] = GST_AUDIO_CHANNEL_POSITION_WIDE_LEFT; break;
+			case SPA_AUDIO_CHANNEL_FRW:  gst_channel_positions[channel_nr] = GST_AUDIO_CHANNEL_POSITION_WIDE_RIGHT; break;
+			case SPA_AUDIO_CHANNEL_RLC:  gst_channel_positions[channel_nr] = GST_AUDIO_CHANNEL_POSITION_SURROUND_LEFT; break;
+			case SPA_AUDIO_CHANNEL_RRC:  gst_channel_positions[channel_nr] = GST_AUDIO_CHANNEL_POSITION_SURROUND_RIGHT; break;
+
+			default:
+				gst_channel_positions[channel_nr] = GST_AUDIO_CHANNEL_POSITION_INVALID;
+		}
+	}
+}
+
+
+static void gst_to_spa_channel_positions(GstAudioChannelPosition const *gst_channel_positions, uint32_t *spa_channel_positions, gint num_channels)
+{
+	gint channel_nr;
+
+	for (channel_nr = 0; channel_nr < num_channels; ++channel_nr)
+	{
+		switch (gst_channel_positions[channel_nr])
+		{
+			case GST_AUDIO_CHANNEL_POSITION_MONO:                  spa_channel_positions[channel_nr] = SPA_AUDIO_CHANNEL_MONO; break;
+			case GST_AUDIO_CHANNEL_POSITION_INVALID:               spa_channel_positions[channel_nr] = SPA_AUDIO_CHANNEL_NA; break;
+			case GST_AUDIO_CHANNEL_POSITION_FRONT_LEFT:            spa_channel_positions[channel_nr] = SPA_AUDIO_CHANNEL_FL; break;
+			case GST_AUDIO_CHANNEL_POSITION_FRONT_RIGHT:           spa_channel_positions[channel_nr] = SPA_AUDIO_CHANNEL_FR; break;
+			case GST_AUDIO_CHANNEL_POSITION_FRONT_CENTER:          spa_channel_positions[channel_nr] = SPA_AUDIO_CHANNEL_FC; break;
+			case GST_AUDIO_CHANNEL_POSITION_LFE1:                  spa_channel_positions[channel_nr] = SPA_AUDIO_CHANNEL_LFE; break;
+			case GST_AUDIO_CHANNEL_POSITION_REAR_LEFT:             spa_channel_positions[channel_nr] = SPA_AUDIO_CHANNEL_RL; break;
+			case GST_AUDIO_CHANNEL_POSITION_REAR_RIGHT:            spa_channel_positions[channel_nr] = SPA_AUDIO_CHANNEL_RR; break;
+			case GST_AUDIO_CHANNEL_POSITION_FRONT_LEFT_OF_CENTER:  spa_channel_positions[channel_nr] = SPA_AUDIO_CHANNEL_FLC; break;
+			case GST_AUDIO_CHANNEL_POSITION_FRONT_RIGHT_OF_CENTER: spa_channel_positions[channel_nr] = SPA_AUDIO_CHANNEL_FRC; break;
+			case GST_AUDIO_CHANNEL_POSITION_REAR_CENTER:           spa_channel_positions[channel_nr] = SPA_AUDIO_CHANNEL_RC; break;
+			case GST_AUDIO_CHANNEL_POSITION_LFE2:                  spa_channel_positions[channel_nr] = SPA_AUDIO_CHANNEL_LFE2; break;
+			case GST_AUDIO_CHANNEL_POSITION_SIDE_LEFT:             spa_channel_positions[channel_nr] = SPA_AUDIO_CHANNEL_SL; break;
+			case GST_AUDIO_CHANNEL_POSITION_SIDE_RIGHT:            spa_channel_positions[channel_nr] = SPA_AUDIO_CHANNEL_SR; break;
+			case GST_AUDIO_CHANNEL_POSITION_TOP_FRONT_LEFT:        spa_channel_positions[channel_nr] = SPA_AUDIO_CHANNEL_TFL; break;
+			case GST_AUDIO_CHANNEL_POSITION_TOP_FRONT_RIGHT:       spa_channel_positions[channel_nr] = SPA_AUDIO_CHANNEL_TFR; break;
+			case GST_AUDIO_CHANNEL_POSITION_TOP_FRONT_CENTER:      spa_channel_positions[channel_nr] = SPA_AUDIO_CHANNEL_TFC; break;
+			case GST_AUDIO_CHANNEL_POSITION_TOP_CENTER:            spa_channel_positions[channel_nr] = SPA_AUDIO_CHANNEL_TC; break;
+			case GST_AUDIO_CHANNEL_POSITION_TOP_REAR_LEFT:         spa_channel_positions[channel_nr] = SPA_AUDIO_CHANNEL_TRL; break;
+			case GST_AUDIO_CHANNEL_POSITION_TOP_REAR_RIGHT:        spa_channel_positions[channel_nr] = SPA_AUDIO_CHANNEL_TRR; break;
+			case GST_AUDIO_CHANNEL_POSITION_TOP_SIDE_LEFT:         spa_channel_positions[channel_nr] = SPA_AUDIO_CHANNEL_TSL; break;
+			case GST_AUDIO_CHANNEL_POSITION_TOP_SIDE_RIGHT:        spa_channel_positions[channel_nr] = SPA_AUDIO_CHANNEL_TSR; break;
+			case GST_AUDIO_CHANNEL_POSITION_TOP_REAR_CENTER:       spa_channel_positions[channel_nr] = SPA_AUDIO_CHANNEL_TRC; break;
+			case GST_AUDIO_CHANNEL_POSITION_BOTTOM_FRONT_CENTER:   spa_channel_positions[channel_nr] = SPA_AUDIO_CHANNEL_BC; break;
+			case GST_AUDIO_CHANNEL_POSITION_BOTTOM_FRONT_LEFT:     spa_channel_positions[channel_nr] = SPA_AUDIO_CHANNEL_BLC; break;
+			case GST_AUDIO_CHANNEL_POSITION_BOTTOM_FRONT_RIGHT:    spa_channel_positions[channel_nr] = SPA_AUDIO_CHANNEL_BRC; break;
+			case GST_AUDIO_CHANNEL_POSITION_WIDE_LEFT:             spa_channel_positions[channel_nr] = SPA_AUDIO_CHANNEL_FLW; break;
+			case GST_AUDIO_CHANNEL_POSITION_WIDE_RIGHT:            spa_channel_positions[channel_nr] = SPA_AUDIO_CHANNEL_FRW; break;
+			case GST_AUDIO_CHANNEL_POSITION_SURROUND_LEFT:         spa_channel_positions[channel_nr] = SPA_AUDIO_CHANNEL_RLC; break;
+			case GST_AUDIO_CHANNEL_POSITION_SURROUND_RIGHT:        spa_channel_positions[channel_nr] = SPA_AUDIO_CHANNEL_RRC; break;
+
+			default:
+				spa_channel_positions[channel_nr] = SPA_AUDIO_CHANNEL_UNKNOWN;
+		}
+	}
+}
+
+
 /**
  * gst_pw_audio_format_get_audio_type_name:
  * @audio_type Audio type to get a name for.
@@ -426,6 +518,7 @@ gboolean gst_pw_audio_format_to_spa_pod(
 			GstAudioFormat gst_audio_format;
 			gint sample_rate;
 			gint num_channels;
+			uint32_t spa_channel_positions[SPA_AUDIO_MAX_CHANNELS];
 
 			gst_audio_format = GST_AUDIO_INFO_FORMAT(&(pw_audio_format->info.pcm_audio_info));
 			sample_rate = GST_AUDIO_INFO_RATE(&(pw_audio_format->info.pcm_audio_info));
@@ -477,14 +570,20 @@ gboolean gst_pw_audio_format_to_spa_pod(
 				num_channels
 			);
 
-			*pod = spa_format_audio_raw_build(
-				&builder, SPA_PARAM_EnumFormat,
-				&SPA_AUDIO_INFO_RAW_INIT(
+			gst_to_spa_channel_positions(pw_audio_format->info.pcm_audio_info.position, spa_channel_positions, num_channels);
+
+			{
+				struct spa_audio_info_raw pcm_info = {
 					.format = spa_audio_format,
-					.channels = num_channels,
-					.rate = sample_rate
-				)
-			);
+					.flags = 0,
+					.rate = sample_rate,
+					.channels = num_channels
+				};
+
+				memcpy(pcm_info.position, spa_channel_positions, sizeof(uint32_t) * num_channels);
+
+				*pod = spa_format_audio_raw_build(&builder, SPA_PARAM_EnumFormat, &pcm_info);
+			}
 
 			break;
 		}
