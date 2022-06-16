@@ -2025,7 +2025,7 @@ static void gst_pw_audio_sink_drain(GstPwAudioSink *self)
 		if (g_atomic_int_get(&(self->flushing)))
 		{
 			GST_DEBUG_OBJECT(self, "aborting drain since we are flushing");
-			return;
+			break;
 		}
 
 		current_fill_level = gst_pw_audio_queue_get_fill_level(self->audio_buffer_queue);
