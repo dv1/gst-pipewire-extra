@@ -1062,26 +1062,25 @@ static GstCaps* gst_pw_audio_sink_get_caps(GstBaseSink *basesink, GstCaps *filte
 {
 	GstPwAudioSink *self = GST_PW_AUDIO_SINK(basesink);
 	GstCaps *available_sinkcaps = NULL;
-	gboolean did_probe_caps = FALSE;
 
 	GST_DEBUG_OBJECT(self, "new get-caps query");
 
 	GST_OBJECT_LOCK(self);
 	if (self->cache_probed_caps && (self->cached_probed_caps != NULL))
-	{
 		available_sinkcaps = gst_caps_ref(self->cached_probed_caps);
-		GST_DEBUG_OBJECT(self, "returning cached get-caps query result: %" GST_PTR_FORMAT, (gpointer)available_sinkcaps);
-	}
 	GST_OBJECT_UNLOCK(self);
 
 	if (available_sinkcaps != NULL)
-		goto finish;
-
-	if (self->pipewire_core->core != NULL)
+	{
+		GST_DEBUG_OBJECT(self, "using cached probed caps as available caps: %" GST_PTR_FORMAT, (gpointer)available_sinkcaps);
+	}
+	else if (self->pipewire_core->core != NULL)
 	{
 		gint audio_type;
 		uint32_t target_object_id;
 		gboolean cancelled = FALSE;
+
+		GST_DEBUG_OBJECT(self, "probing PipeWire graph for available caps");
 
 		/* Take the object lock in case the target_object_id GObject
 		 * property is modified at the same time by a different thread
@@ -1138,11 +1137,15 @@ static GstCaps* gst_pw_audio_sink_get_caps(GstBaseSink *basesink, GstCaps *filte
 			return gst_pw_audio_format_get_template_caps();
 		}
 
-		did_probe_caps = TRUE;
+		GST_OBJECT_LOCK(self);
+		if (self->cache_probed_caps)
+			gst_caps_replace(&(self->cached_probed_caps), available_sinkcaps);
+		GST_OBJECT_UNLOCK(self);
 	}
 	else
 	{
 		available_sinkcaps = gst_pw_audio_format_get_template_caps();
+		GST_DEBUG_OBJECT(self, "using template caps as available caps");
 	}
 
 	if (filter != NULL)
@@ -1167,12 +1170,6 @@ static GstCaps* gst_pw_audio_sink_get_caps(GstBaseSink *basesink, GstCaps *filte
 		GST_DEBUG_OBJECT(self, "  final caps for query:           %" GST_PTR_FORMAT, (gpointer)available_sinkcaps);
 	}
 
-	GST_OBJECT_LOCK(self);
-	if (self->cache_probed_caps && did_probe_caps)
-		gst_caps_replace(&(self->cached_probed_caps), available_sinkcaps);
-	GST_OBJECT_UNLOCK(self);
-
-finish:
 	return available_sinkcaps;
 }
 
