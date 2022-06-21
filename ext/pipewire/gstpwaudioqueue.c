@@ -759,12 +759,14 @@ GstPwAudioQueueRetrievalResult gst_pw_audio_queue_retrieve_buffer(
 			GST_LOG_OBJECT(
 				queue,
 				"retrieving frames without sync;  "
+				"stride: %" G_GSIZE_FORMAT "  "
 				"num queued frames: %" G_GSIZE_FORMAT "  "
 				"queued duration: %" GST_TIME_FORMAT "  "
 				"ideal num output frames: %" G_GSIZE_FORMAT "  "
 				"min num output frames: %" G_GSIZE_FORMAT "  "
 				"actual num output frames: %" G_GSIZE_FORMAT "  "
 				"actual output duration: %" GST_TIME_FORMAT,
+				stride,
 				num_queued_frames,
 				GST_TIME_ARGS(queued_duration),
 				ideal_num_output_frames,
