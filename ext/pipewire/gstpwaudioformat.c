@@ -80,6 +80,13 @@
 #include <spa/pod/pod.h>
 #include <spa/utils/result.h>
 
+/* Wrapper around spa_strerror() to avoid "ISO C forbids braced-groups within expressions"
+ * warnings in the code below */
+static inline char* wrapped_spa_strerror(int err)
+{
+	return spa_strerror(err);
+}
+
 #pragma GCC diagnostic pop
 
 
@@ -786,7 +793,7 @@ gboolean gst_pw_audio_format_from_spa_pod_with_format_param(
 
 	if ((err = spa_format_parse(format_param_pod, &info.media_type, &info.media_subtype)) < 0)
 	{
-		GST_ERROR_OBJECT(parent, "could not parse format: %s (%d)", spa_strerror(err), -err);
+		GST_ERROR_OBJECT(parent, "could not parse format: %s (%d)", wrapped_spa_strerror(err), -err);
 		goto error;
 	}
 
@@ -805,7 +812,7 @@ gboolean gst_pw_audio_format_from_spa_pod_with_format_param(
 
 			if (spa_format_audio_raw_parse(format_param_pod, &(info.info.raw)) < 0)
 			{
-				GST_ERROR_OBJECT(parent, "could not parse PCM format: %s (%d)", spa_strerror(err), -err);
+				GST_ERROR_OBJECT(parent, "could not parse PCM format: %s (%d)", wrapped_spa_strerror(err), -err);
 				goto error;
 			}
 
@@ -866,7 +873,7 @@ gboolean gst_pw_audio_format_from_spa_pod_with_format_param(
 		{
 			if (spa_format_audio_dsd_parse(format_param_pod, &(info.info.dsd)) < 0)
 			{
-				GST_ERROR_OBJECT(parent, "could not parse DSD format: %s (%d)", spa_strerror(err), -err);
+				GST_ERROR_OBJECT(parent, "could not parse DSD format: %s (%d)", wrapped_spa_strerror(err), -err);
 				goto error;
 			}
 
