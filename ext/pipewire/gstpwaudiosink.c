@@ -1103,14 +1103,64 @@ static GstCaps* gst_pw_audio_sink_get_caps(GstBaseSink *basesink, GstCaps *filte
 		for (audio_type = 0; (audio_type < GST_NUM_PIPEWIRE_AUDIO_TYPES) && !cancelled; ++audio_type)
 		{
 			GstPwAudioFormatProbeResult probing_result;
+			GstPwAudioFormat *probed_details = NULL;
 
-			probing_result = gst_pw_audio_format_probe_probe_audio_type(self->format_probe, audio_type, target_object_id);
+			probing_result = gst_pw_audio_format_probe_probe_audio_type(self->format_probe, audio_type, target_object_id, &probed_details);
 
 			switch (probing_result)
 			{
 				case GST_PW_AUDIO_FORMAT_PROBE_RESULT_SUPPORTED:
-					gst_caps_append(available_sinkcaps, gst_pw_audio_format_get_template_caps_for_type(audio_type));
+				{
+					switch (audio_type)
+					{
+						case GST_PIPEWIRE_AUDIO_TYPE_DSD:
+						{
+							/* In here, place the probed DSD format as the first one
+							 * in the format list. This ensures that upstream prefers
+							 * this format and only uses others if necessary, which
+							 * helps, since those others require conversion, while
+							 * the probed format doesn't. */
+
+							GstCaps *caps = gst_pw_audio_format_get_template_caps_for_type(audio_type);
+							GstStructure *s = gst_caps_get_structure(caps, 0);
+							GValue list_value = G_VALUE_INIT;
+							GValue string_value = G_VALUE_INIT;
+							gint format_idx;
+
+							g_value_init(&list_value, GST_TYPE_LIST);
+							g_value_init(&string_value, G_TYPE_STRING);
+
+							/* First add the probed format. */
+							g_value_set_static_string(&string_value, gst_pipewire_dsd_format_to_string(probed_details->info.dsd_audio_info.format));
+							gst_value_list_append_value(&list_value, &string_value);
+
+							/* Now add the rest. */
+							for (format_idx = GST_PIPEWIRE_DSD_FIRST_VALID_FORMAT; format_idx < GST_NUM_PIPEWIRE_DSD_FORMATS; ++format_idx)
+							{
+								GstPipewireDsdFormat dsd_format = (GstPipewireDsdFormat)format_idx;
+
+								if (dsd_format == probed_details->info.dsd_audio_info.format)
+									continue;
+
+								g_value_set_static_string(&string_value, gst_pipewire_dsd_format_to_string(dsd_format));
+								gst_value_list_append_value(&list_value, &string_value);
+							}
+
+							gst_structure_set_value(s, "format", &list_value);
+
+							g_value_unset(&list_value);
+							g_value_unset(&string_value);
+
+							gst_caps_append(available_sinkcaps, caps);
+							break;
+						}
+
+						default:
+							gst_caps_append(available_sinkcaps, gst_pw_audio_format_get_template_caps_for_type(audio_type));
+					}
+
 					break;
+				}
 
 				case GST_PW_AUDIO_FORMAT_PROBE_RESULT_CANCELLED:
 					cancelled = TRUE;

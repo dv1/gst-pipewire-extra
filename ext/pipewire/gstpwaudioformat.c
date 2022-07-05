@@ -1549,17 +1549,22 @@ void gst_pw_audio_format_probe_teardown(GstPwAudioFormatProbe *pw_audio_format_p
  * @pw_audio_format_probe: a #GstPwAudioFormatProbe
  * @audio_type: the #GstPipewireAudioType to probe
  * @target_object_id: Target object ID to connect to while probing
+ * @probed_details: Optional output value for storing probed details in
  *
  * Probes if the PipeWire graph can handle the given audio type.
  *
  * If the probing stream shall not connect to any particular target
  * object, set target_object_id to PW_ID_ANY.
  *
+ * If probed_details is non-NULL, then format details about the
+ * probed type are filled in. These details are useful for having
+ * preferred format details for the given type.
+ *
  * MT safe (it takes the object lock while running).
  *
  * Returns: The result of the probing.
  */
-GstPwAudioFormatProbeResult gst_pw_audio_format_probe_probe_audio_type(GstPwAudioFormatProbe *pw_audio_format_probe, GstPipewireAudioType audio_type, guint32 target_object_id)
+GstPwAudioFormatProbeResult gst_pw_audio_format_probe_probe_audio_type(GstPwAudioFormatProbe *pw_audio_format_probe, GstPipewireAudioType audio_type, guint32 target_object_id, GstPwAudioFormat **probed_details)
 {
 	GstPwAudioFormatProbeResult probe_result;
 	int connect_ret;
@@ -1633,6 +1638,9 @@ GstPwAudioFormatProbeResult gst_pw_audio_format_probe_probe_audio_type(GstPwAudi
 
 	can_handle_audio_type = (connect_ret == 0) && (pw_audio_format_probe->last_state != PW_STREAM_STATE_ERROR);
 	probe_result = can_handle_audio_type ? GST_PW_AUDIO_FORMAT_PROBE_RESULT_SUPPORTED : GST_PW_AUDIO_FORMAT_PROBE_RESULT_NOT_SUPPORTED;
+
+	if (probed_details != NULL)
+		*probed_details = &(pw_audio_format_probe->pw_audio_format);
 
 	GST_DEBUG_OBJECT(pw_audio_format_probe, "audio type \"%s\" can be handled by the PipeWire graph: %s", gst_pw_audio_format_get_audio_type_name(audio_type), can_handle_audio_type ? "yes" : "no");
 

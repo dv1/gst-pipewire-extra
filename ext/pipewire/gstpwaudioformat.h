@@ -58,13 +58,17 @@ GstPipewireAudioType;
 
 typedef enum
 {
-	GST_PIPEWIRE_DSD_FORMAT_DSD_UNKNOWN,
+	GST_PIPEWIRE_DSD_FORMAT_DSD_UNKNOWN = 0,
 
 	GST_PIPEWIRE_DSD_FORMAT_DSD_U8,
 	GST_PIPEWIRE_DSD_FORMAT_DSD_U16LE,
 	GST_PIPEWIRE_DSD_FORMAT_DSD_U16BE,
 	GST_PIPEWIRE_DSD_FORMAT_DSD_U32LE,
-	GST_PIPEWIRE_DSD_FORMAT_DSD_U32BE
+	GST_PIPEWIRE_DSD_FORMAT_DSD_U32BE,
+
+	GST_NUM_PIPEWIRE_DSD_FORMATS,
+
+	GST_PIPEWIRE_DSD_FIRST_VALID_FORMAT = GST_PIPEWIRE_DSD_FORMAT_DSD_U8
 }
 GstPipewireDsdFormat;
 
@@ -154,7 +158,7 @@ GType gst_pw_audio_format_probe_get_type(void);
 GstPwAudioFormatProbe* gst_pw_audio_format_probe_new(GstPipewireCore *core);
 void gst_pw_audio_format_probe_setup(GstPwAudioFormatProbe *pw_audio_format_probe);
 void gst_pw_audio_format_probe_teardown(GstPwAudioFormatProbe *pw_audio_format_probe);
-GstPwAudioFormatProbeResult gst_pw_audio_format_probe_probe_audio_type(GstPwAudioFormatProbe *pw_audio_format_probe, GstPipewireAudioType audio_type, guint32 target_object_id);
+GstPwAudioFormatProbeResult gst_pw_audio_format_probe_probe_audio_type(GstPwAudioFormatProbe *pw_audio_format_probe, GstPipewireAudioType audio_type, guint32 target_object_id, GstPwAudioFormat **probed_details);
 void gst_pw_audio_format_probe_cancel(GstPwAudioFormatProbe *pw_audio_format_probe);
 
 
