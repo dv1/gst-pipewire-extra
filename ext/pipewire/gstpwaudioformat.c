@@ -334,6 +334,71 @@ guint gst_pipewire_dsd_format_get_width(GstPipewireDsdFormat format)
 
 
 /**
+ * @gst_pipewire_dsd_convert:
+ * @input_data Pointer to memory block to read input DSD data from for conversion.
+ * @output_data Pointer to memory block where the converted DSD data shall be written to.
+ * @input_format DSD format of the input data.
+ * @output_format DSD format of the output data.
+ * @num_output_bytes Number of output bytes.
+ * @num_channels Number of DSD input data channels. Must be >0.
+ *
+ * Converts the input DSD data from input_data, converting from the input_format to the
+ * output_format, and writes the converted result to output_data. If both formats are
+ * equal, this just memcpy()'s the first num_output_bytes of input_data to output_data.
+ *
+ * num_output_bytes must not be greater than the size of the memory block that input_data
+ * points to, but must be at least as large as the stride of the output data (the stride
+ * being gst_pipewire_dsd_format_get_width(output_format) * num_channels), and needs to be
+ * an integer multiple of that stride.
+ */
+void gst_pipewire_dsd_convert(guint8 const *input_data, guint8 *output_data, GstPipewireDsdFormat input_format, GstPipewireDsdFormat output_format, gsize num_output_bytes, gint num_channels)
+{
+	guint out_index;
+	guint in_word_width, out_word_width;
+	guint in_stride, out_stride;
+	gboolean input_is_le = gst_pipewire_dsd_format_is_le(input_format);
+	gboolean output_is_le = gst_pipewire_dsd_format_is_le(output_format);
+
+	if (input_format == output_format)
+	{
+		memcpy(output_data, input_data, num_output_bytes);
+		return;
+	}
+
+	in_word_width = gst_pipewire_dsd_format_get_width(input_format);
+	out_word_width = gst_pipewire_dsd_format_get_width(output_format);
+	in_stride = in_word_width * num_channels;
+	out_stride = out_word_width * num_channels;
+
+	for (out_index = 0; out_index < num_output_bytes; ++out_index)
+	{
+		guint in_word_index, in_word_offset;
+		guint out_word_index, out_word_offset;
+		guint in_index;
+		guint channel_nr;
+		guint position;
+
+		out_word_index = out_index / out_word_width;
+		out_word_offset = out_index - out_word_index * out_word_width;
+		if (output_is_le)
+			out_word_offset = out_word_width - 1 - out_word_offset;
+
+		channel_nr = out_word_index % num_channels;
+		position = (out_index / out_stride) * out_word_width + out_word_offset;
+
+		in_word_index = (position / in_word_width) * in_stride + channel_nr * in_word_width;
+		in_word_offset = position % in_word_width;
+		if (input_is_le)
+			in_word_offset = in_word_width - 1 - in_word_offset;
+
+		in_index = in_word_index + in_word_offset;
+
+		output_data[out_index] = input_data[in_index];
+	}
+}
+
+
+/**
  * gst_pw_audio_format_get_audio_type_name:
  * @audio_type Audio type to get a name for.
  *

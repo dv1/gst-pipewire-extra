@@ -76,6 +76,30 @@ GstPipewireDsdFormat gst_pipewire_dsd_format_from_string(gchar const *str);
 gchar const * gst_pipewire_dsd_format_to_string(GstPipewireDsdFormat format);
 guint gst_pipewire_dsd_format_get_width(GstPipewireDsdFormat format);
 
+/**
+ * @gst_pipewire_dsd_format_is_le:
+ * @format The format.
+ *
+ * Useful for determining whether a format is a little-endian.
+ * GST_PIPEWIRE_DSD_FORMAT_DSD_U8 and GST_PIPEWIRE_DSD_FORMAT_DSD_UNKNOWN
+ * are not considered little-endian.
+ *
+ * Returns: TRUE if the format is a little-endian one.
+ */
+inline static gboolean gst_pipewire_dsd_format_is_le(GstPipewireDsdFormat format)
+{
+	switch (format)
+	{
+		case GST_PIPEWIRE_DSD_FORMAT_DSD_U16LE:
+		case GST_PIPEWIRE_DSD_FORMAT_DSD_U32LE:
+			return TRUE;
+		default:
+			return FALSE;
+	}
+}
+
+void gst_pipewire_dsd_convert(guint8 const *input_data, guint8 *output_data, GstPipewireDsdFormat input_format, GstPipewireDsdFormat output_format, gsize num_output_bytes, gint num_channels);
+
 typedef struct
 {
 	GstPipewireDsdFormat format;
