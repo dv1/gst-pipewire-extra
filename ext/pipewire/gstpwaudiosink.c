@@ -129,7 +129,9 @@ struct _GstPwAudioSink
 
 	GstCaps *sink_caps;
 	GstPwAudioFormat pw_audio_format;
+	GstPwAudioFormat pw_audio_format_from_changed_params;
 	GstPwAudioFormatProbe *format_probe;
+	guint dsd_conversion_buffer_size_multiplier;
 	GMutex probe_process_mutex;
 	GstCaps *cached_probed_caps;
 
@@ -270,6 +272,7 @@ static void gst_pw_audio_sink_disconnect_stream(GstPwAudioSink *self);
 
 /* pw_stream callbacks for both contiguous and packetized data. */
 static void gst_pw_audio_sink_pw_state_changed(void *data, enum pw_stream_state old_state, enum pw_stream_state new_state, const char *error);
+static void gst_pw_audio_sink_param_changed(void *data, uint32_t id, const struct spa_pod *param);
 static void gst_pw_audio_sink_io_changed(void *data, uint32_t id, void *area, uint32_t size);
 
 
@@ -281,6 +284,7 @@ static const struct pw_stream_events contiguous_stream_events =
 {
 	PW_VERSION_STREAM_EVENTS,
 	.state_changed = gst_pw_audio_sink_pw_state_changed,
+	.param_changed = gst_pw_audio_sink_param_changed,
 	.io_changed = gst_pw_audio_sink_io_changed,
 	.process = gst_pw_audio_sink_contiguous_on_process_stream,
 };
@@ -294,6 +298,7 @@ static const struct pw_stream_events packetized_stream_events =
 {
 	PW_VERSION_STREAM_EVENTS,
 	.state_changed = gst_pw_audio_sink_pw_state_changed,
+	.param_changed = gst_pw_audio_sink_param_changed,
 	.io_changed = gst_pw_audio_sink_io_changed,
 	.process = gst_pw_audio_sink_packetized_on_process_stream,
 };
@@ -982,8 +987,26 @@ static gboolean gst_pw_audio_sink_set_caps(GstBaseSink *basesink, GstCaps *caps)
 	 * audio format params to the new PW stream. */
 	if (!gst_pw_audio_format_from_caps(&(self->pw_audio_format), GST_OBJECT_CAST(self), caps))
 		goto error;
-	if (!gst_pw_audio_format_to_spa_pod(&(self->pw_audio_format), GST_OBJECT_CAST(self), builder_buffer, sizeof(builder_buffer), params))
-		goto error;
+
+	/* Edit the DSD info to set UNKNOWN as the DSD format. This is necessary since
+	 * the input data may be using a different format than what the PipeWire graph
+	 * expects. That graph format is stored in gst_pw_audio_sink_param_changed.
+	 * By setting the DSD format in the info as UNKNOWN, we essentially tell the
+	 * graph that we don't care about the format. Then, if there is a mismatch
+	 * between the input format and the graph format, we convert on the fly using
+	 * gst_pipewire_dsd_convert(). */
+	{
+		GstPipewireDsdFormat original_dsd_format = self->pw_audio_format.info.dsd_audio_info.format;
+
+		if (self->pw_audio_format.audio_type == GST_PIPEWIRE_AUDIO_TYPE_DSD)
+			self->pw_audio_format.info.dsd_audio_info.format = GST_PIPEWIRE_DSD_FORMAT_DSD_UNKNOWN;
+
+		if (!gst_pw_audio_format_to_spa_pod(&(self->pw_audio_format), GST_OBJECT_CAST(self), builder_buffer, sizeof(builder_buffer), params))
+			goto error;
+
+		if (self->pw_audio_format.audio_type == GST_PIPEWIRE_AUDIO_TYPE_DSD)
+			self->pw_audio_format.info.dsd_audio_info.format = original_dsd_format;
+	}
 
 	/* Pick the stream connection flags.
 	 *
@@ -2133,6 +2156,48 @@ static void gst_pw_audio_sink_pw_state_changed(void *data, enum pw_stream_state 
 }
 
 
+static void gst_pw_audio_sink_param_changed(void *data, uint32_t id, const struct spa_pod *param)
+{
+	GstPwAudioSink *self = GST_PW_AUDIO_SINK_CAST(data);
+
+	if ((id != SPA_PARAM_Format) || (param == NULL))
+		return;
+
+	if (!gst_pw_audio_format_from_spa_pod_with_format_param(
+		&(self->pw_audio_format_from_changed_params),
+		GST_OBJECT_CAST(self),
+		param
+	))
+		return;
+
+	{
+		gchar *format_str = gst_pw_audio_format_to_string(&(self->pw_audio_format_from_changed_params));
+		GST_DEBUG_OBJECT(self, "format param changed;  audio format details: %s", format_str);
+		g_free(format_str);
+	}
+
+	/* See the gst_pw_audio_format_get_stride() documentation for an
+	 * explanation why dsd_conversion_buffer_size_multiplier is needed. */
+	if (self->pw_audio_format_from_changed_params.audio_type == GST_PIPEWIRE_AUDIO_TYPE_DSD)
+	{
+		guint input_dsd_format_width = gst_pipewire_dsd_format_get_width(self->pw_audio_format.info.dsd_audio_info.format);
+		guint graph_dsd_format_width = gst_pipewire_dsd_format_get_width(self->pw_audio_format_from_changed_params.info.dsd_audio_info.format);
+
+		if (graph_dsd_format_width > input_dsd_format_width)
+			self->dsd_conversion_buffer_size_multiplier = graph_dsd_format_width / input_dsd_format_width;
+		else
+			self->dsd_conversion_buffer_size_multiplier = 1;
+
+		GST_DEBUG_OBJECT(
+			self,
+			"additional DSD information:  input/graph DSD format width: %u/%u  conversion buffer size multiplier: %u",
+			input_dsd_format_width, graph_dsd_format_width,
+			self->dsd_conversion_buffer_size_multiplier
+		);
+	}
+}
+
+
 static void gst_pw_audio_sink_io_changed(void *data, uint32_t id, void *area, G_GNUC_UNUSED uint32_t size)
 {
 	GstPwAudioSink *self = GST_PW_AUDIO_SINK_CAST(data);
@@ -2292,7 +2357,7 @@ static void gst_pw_audio_sink_contiguous_on_process_stream(void *data)
 	 * thread starvation (in the render() function) and similar. */
 	LOCK_AUDIO_BUFFER_QUEUE(self);
 
-	stride = gst_pw_audio_format_get_stride(&(self->pw_audio_format));
+	stride = gst_pw_audio_format_get_stride(&(self->pw_audio_format_from_changed_params));
 
 	if (G_UNLIKELY(gst_pw_audio_queue_get_fill_level(self->audio_buffer_queue) == 0))
 	{
@@ -2306,6 +2371,7 @@ static void gst_pw_audio_sink_contiguous_on_process_stream(void *data)
 		switch (self->pw_audio_format.audio_type)
 		{
 			case GST_PIPEWIRE_AUDIO_TYPE_PCM:
+			case GST_PIPEWIRE_AUDIO_TYPE_DSD:
 			{
 				GstMapInfo map_info;
 				GstPwAudioQueueRetrievalDetails retrieval_details;
@@ -2315,7 +2381,15 @@ static void gst_pw_audio_sink_contiguous_on_process_stream(void *data)
 				gsize buffer_size;
 				gsize spa_data_chunk_byte_offset = 0;
 
-				num_frames_to_take = self->spa_rate_match->size;
+				// TODO: It is currently unclear why the *2 multiplication is necessary.
+				// It is known that commit c48a4bc166bfb5827ecea1195a8435458a3d8501 in
+				// pipewire-git ("pw-cat: fix DSF playback again") applies frame scaling,
+				// so perhaps something related needs to be done here. Alternatively,
+				// the "2" may be related to the number of channels.
+				if (self->pw_audio_format.audio_type == GST_PIPEWIRE_AUDIO_TYPE_PCM)
+					num_frames_to_take = self->spa_rate_match->size;
+				else
+					num_frames_to_take = self->spa_rate_match->size * self->dsd_conversion_buffer_size_multiplier * 2;
 
 				if (!self->synced_playback_started)
 				{
@@ -2365,10 +2439,20 @@ static void gst_pw_audio_sink_contiguous_on_process_stream(void *data)
 				{
 					gst_pw_audio_format_write_silence_frames(&(self->pw_audio_format), inner_spa_data->data, retrieval_details.num_silence_frames_to_prepend);
 					spa_data_chunk_byte_offset += retrieval_details.num_silence_frames_to_prepend * stride;
-					GST_LOG_OBJECT(self, "will write PCM gstbuffer into SPA data chunk at byte offset %" G_GSIZE_FORMAT, spa_data_chunk_byte_offset);
+					GST_LOG_OBJECT(
+						self,
+						"will write %s gstbuffer into SPA data chunk at byte offset %" G_GSIZE_FORMAT,
+						(self->pw_audio_format.audio_type == GST_PIPEWIRE_AUDIO_TYPE_PCM) ? "PCM" : "DSD",
+						spa_data_chunk_byte_offset
+					);
 				}
 
-				GST_LOG_OBJECT(self, "got PCM gstbuffer from audio buffer queue (PTS shifted by element latency): %" GST_PTR_FORMAT, (gpointer)(retrieval_details.retrieved_buffer));
+				GST_LOG_OBJECT(
+					self,
+					"got %s gstbuffer from audio buffer queue (PTS shifted by element latency): %" GST_PTR_FORMAT,
+					(self->pw_audio_format.audio_type == GST_PIPEWIRE_AUDIO_TYPE_PCM) ? "PCM" : "DSD",
+					(gpointer)(retrieval_details.retrieved_buffer)
+				);
 
 				gst_buffer_map(retrieval_details.retrieved_buffer, &map_info, GST_MAP_READ);
 
@@ -2379,7 +2463,26 @@ static void gst_pw_audio_sink_contiguous_on_process_stream(void *data)
 				inner_spa_data->chunk->size = buffer_size + spa_data_chunk_byte_offset;
 				inner_spa_data->chunk->stride = stride;
 
-				memcpy((guint8 *)(inner_spa_data->data) + spa_data_chunk_byte_offset, map_info.data, buffer_size);
+				switch (self->pw_audio_format.audio_type)
+				{
+					case GST_PIPEWIRE_AUDIO_TYPE_PCM:
+						memcpy((guint8 *)(inner_spa_data->data) + spa_data_chunk_byte_offset, map_info.data, buffer_size);
+						break;
+
+					case GST_PIPEWIRE_AUDIO_TYPE_DSD:
+						gst_pipewire_dsd_convert(
+							map_info.data,
+							(guint8 *)(inner_spa_data->data),
+							self->pw_audio_format.info.dsd_audio_info.format,
+							self->pw_audio_format_from_changed_params.info.dsd_audio_info.format,
+							buffer_size,
+							self->pw_audio_format_from_changed_params.info.dsd_audio_info.channels
+						);
+						break;
+
+					default:
+						g_assert_not_reached();
+				}
 
 				gst_buffer_unmap(retrieval_details.retrieved_buffer, &map_info);
 

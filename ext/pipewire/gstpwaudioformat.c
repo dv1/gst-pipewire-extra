@@ -810,6 +810,7 @@ gboolean gst_pw_audio_format_to_spa_pod(
 				case GST_PIPEWIRE_DSD_FORMAT_DSD_U16BE: interleave = +2; break;
 				case GST_PIPEWIRE_DSD_FORMAT_DSD_U32LE: interleave = -4; break;
 				case GST_PIPEWIRE_DSD_FORMAT_DSD_U32BE: interleave = +4; break;
+				case GST_PIPEWIRE_DSD_FORMAT_DSD_UNKNOWN: interleave = 0; break;
 				default:
 					GST_ERROR_OBJECT(parent, "unsupported DSD format \"%s\"", gst_pipewire_dsd_format_to_string(pw_audio_format->info.dsd_audio_info.format));
 					goto error;
@@ -1426,7 +1427,7 @@ static void gst_pw_probing_param_changed(void *data, uint32_t id, const struct s
 }
 
 
-static void gst_pw_probing_io_changed(void *data, uint32_t id, void *area, uint32_t size)
+static void gst_pw_probing_io_changed(void *data, uint32_t id, void *area, G_GNUC_UNUSED uint32_t size)
 {
 	GstPwAudioFormatProbe *self = GST_PW_AUDIO_FORMAT_PROBE_CAST(data);
 
