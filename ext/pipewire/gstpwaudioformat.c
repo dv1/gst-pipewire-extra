@@ -990,6 +990,16 @@ gboolean gst_pw_audio_format_build_spa_pod_for_probing(
  * the stride defines the size of a PCM frame in bytes, and is
  * equivalent to the return value of GST_AUDIO_INFO_BPF().
  *
+ * NOTE: In DSD, the "stride" equals the DSD format width multiplied
+ * by the number of channels. For example, DSD_U32BE has 4 bytes,
+ * and with 2 channels, this means the stride equals 8 bytes.
+ * However, in DSD, the format specifies the *grouping* of DSD bits.
+ * There is no real "sample format" in DSD. DSD_U32BE contains 32
+ * DSD bits, while DSD_U8 contains 8 DSD bits. This means that unlike
+ * with PCM, different DSD formats imply different playtimes. For
+ * example, DSD_U32BE covers 4 times as much playtime as DSD_U8. This
+ * is important to keep in mind when converting between DSD formats.
+ *
  * The stride is needed by PipeWire SPA data chunks and also
  * for converting between number of bytes and number of frames.
  * (num-bytes = num-frames * stride)
@@ -1335,8 +1345,6 @@ static void gst_pw_probing_param_changed(void *data, uint32_t id, const struct s
 	if ((id != SPA_PARAM_Format) || (param == NULL))
 		return;
 
-	GST_DEBUG_OBJECT(self, "format param changed; parsing and analyzing");
-
 	gst_pw_audio_format_from_spa_pod_with_format_param(
 		&(self->pw_audio_format),
 		GST_OBJECT_CAST(self),
@@ -1344,6 +1352,12 @@ static void gst_pw_probing_param_changed(void *data, uint32_t id, const struct s
 	);
 
 	self->stride = gst_pw_audio_format_get_stride(&(self->pw_audio_format));
+
+	{
+		gchar *format_str = gst_pw_audio_format_to_string(&(self->pw_audio_format));
+		GST_DEBUG_OBJECT(self, "format param changed; parsing and analyzing;  stride: %" G_GINT32_FORMAT "  audio format details: %s", self->stride, format_str);
+		g_free(format_str);
+	}
 }
 
 
