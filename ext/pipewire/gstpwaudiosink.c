@@ -200,6 +200,7 @@ struct _GstPwAudioSink
 	gboolean stream_is_connected;
 	gboolean stream_is_active;
 	struct spa_hook stream_listener;
+	gboolean stream_listener_added;
 	/* The pointer to the SPA IO position is received in the
 	 * io_changed stream event and accessed in the process event. */
 	struct spa_io_position *spa_position;
@@ -525,6 +526,7 @@ static void gst_pw_audio_sink_init(GstPwAudioSink *self)
 	self->stream = NULL;
 	self->stream_is_connected = FALSE;
 	self->stream_is_active = FALSE;
+	self->stream_listener_added = FALSE;
 	self->spa_position = NULL;
 	self->spa_rate_match = NULL;
 	self->stream_delay_in_ticks = 0;
@@ -976,6 +978,15 @@ static gboolean gst_pw_audio_sink_set_caps(GstBaseSink *basesink, GstCaps *caps)
 	gst_pw_audio_sink_drain(self);
 	gst_pw_audio_sink_disconnect_stream(self);
 
+	/* After disconnecting we remove the listener if it was previously added.
+	 * This is important, otherwise the stream accumulates listeners -
+	 * we only want one to be in use. */
+	if (self->stream_listener_added)
+	{
+		spa_hook_remove(&(self->stream_listener));
+		self->stream_listener_added = FALSE;
+	}
+
 	/* Get rid of the old caps here. That way, should an error occur below,
 	 * we won't be left with the old, obsolete caps. */
 	gst_caps_replace(&(self->sink_caps), NULL);
@@ -1038,14 +1049,13 @@ static gboolean gst_pw_audio_sink_set_caps(GstBaseSink *basesink, GstCaps *caps)
 		goto error;
 	}
 
-	/* The listener is removed when disconnecting, so we can just add
-	 * it here without worrying about any previously added ones. */
 	pw_stream_add_listener(
 		self->stream,
 		&(self->stream_listener),
 		gst_pw_audio_format_data_is_contiguous(self->pw_audio_format.audio_type) ? &contiguous_stream_events : &packetized_stream_events,
 		self
 	);
+	self->stream_listener_added = TRUE;
 
 	pw_stream_connect(
 		self->stream,
@@ -1417,6 +1427,8 @@ static gboolean gst_pw_audio_sink_stop(GstBaseSink *basesink)
 	self->quantum_size = 0;
 
 	self->stream_clock_is_pipeline_clock = FALSE;
+
+	self->stream_listener_added = FALSE;
 
 	return TRUE;
 }
