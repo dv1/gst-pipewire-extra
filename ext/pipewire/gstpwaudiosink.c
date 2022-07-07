@@ -1832,6 +1832,10 @@ static GstFlowReturn gst_pw_audio_sink_render_contiguous(GstPwAudioSink *self, G
 			GST_BUFFER_PTS(incoming_buffer_copy) = pw_base_time + running_time_pts_begin;
 			GST_BUFFER_DURATION(incoming_buffer_copy) = clipped_pts_end - clipped_pts_begin;
 
+			/* Estimate the next PTS. If the stream PTS are properly aligned, then the next
+			 * running-time PTS will match this estimate. Otherwise we have to compensate. */
+			self->last_running_time_pts_end = GST_BUFFER_PTS(incoming_buffer_copy) + GST_BUFFER_DURATION(incoming_buffer_copy);
+
 			GST_LOG_OBJECT(
 				self,
 				"running time begin/end PTS: %" GST_TIME_FORMAT "/%" GST_TIME_FORMAT,
@@ -1873,6 +1877,8 @@ static GstFlowReturn gst_pw_audio_sink_render_contiguous(GstPwAudioSink *self, G
 		 */
 		incoming_buffer_copy = gst_buffer_copy(original_incoming_buffer);
 		GST_BUFFER_PTS(incoming_buffer_copy) = GST_CLOCK_TIME_NONE;
+		/* Also discard the last running-time PTS to avoid incorrect discontinuity calculations. */
+		self->last_running_time_pts_end = GST_CLOCK_TIME_NONE;
 	}
 
 	while (TRUE)
