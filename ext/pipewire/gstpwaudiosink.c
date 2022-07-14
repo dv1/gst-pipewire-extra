@@ -2512,7 +2512,11 @@ static void gst_pw_audio_sink_contiguous_on_process_stream(void *data)
 			}
 
 			default:
-				break;
+				/* Raise an assertion here. If we reach this point, then it means that
+				 * either, this contiguous process callback is being used for non-contiguous
+				 * data, or some extra contiguous audio type got introduced, but code for
+				 * processing it wasn't added here yet. */
+				g_assert_not_reached();
 		}
 
 		g_cond_signal(&(self->audio_buffer_queue_cond));
