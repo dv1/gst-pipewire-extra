@@ -1964,7 +1964,7 @@ static gboolean gst_pw_audio_sink_handle_convert_query(GstPwAudioSink *self, Gst
 
 	gst_query_parse_convert(query, &source_gstformat, &source_quantity, &dest_gstformat, NULL);
 
-	GST_DEBUG_OBJECT(
+	GST_LOG_OBJECT(
 		self,
 		"handle convert query: source/dest format: %s/%s source quantity: %" G_GINT64_FORMAT,
 		gst_format_get_name(source_gstformat),
@@ -2040,7 +2040,7 @@ static gboolean gst_pw_audio_sink_handle_convert_query(GstPwAudioSink *self, Gst
 		}
 	}
 
-	GST_DEBUG_OBJECT(self, "conversion result: %" G_GINT64_FORMAT " -> %" G_GINT64_FORMAT, source_quantity, dest_quantity);
+	GST_LOG_OBJECT(self, "conversion result: %" G_GINT64_FORMAT " -> %" G_GINT64_FORMAT, source_quantity, dest_quantity);
 
 	gst_query_set_convert(query, source_gstformat, source_quantity, dest_gstformat, dest_quantity);
 
