@@ -131,6 +131,7 @@ struct _GstPwAudioSink
 	GstPwAudioFormat pw_audio_format;
 	GstPwAudioFormat pw_audio_format_from_changed_params;
 	GstPwAudioFormatProbe *format_probe;
+	guint dsd_data_rate_multiplier;
 	guint dsd_conversion_buffer_size_multiplier;
 	GMutex probe_process_mutex;
 	GstCaps *cached_probed_caps;
@@ -1204,6 +1205,16 @@ static GstCaps* gst_pw_audio_sink_get_caps(GstBaseSink *basesink, GstCaps *filte
 			}
 		}
 
+		// TODO: This is a workaround. Without this, any DSD playback other than DSD64 fails.
+		// It seems that the ALSA SPA sink node is not correctly reinitialized, and "lingers"
+		// in its DSD64 setup (which is used during probing). This leads to this error in the log:
+		//
+		//   pw.context   | [       context.c:  737 pw_context_debug_port_params()] params Spa:Enum:ParamId:EnumFormat: 0:0 Invalid argument (input format (no more input formats))
+		//
+		// By dummy-probing PCM again, the node is forced to reinitialize.
+		// Investigate this in PipeWire, since this looks very much like a bug there.
+		gst_pw_audio_format_probe_probe_audio_type(self->format_probe, GST_PIPEWIRE_AUDIO_TYPE_PCM, target_object_id, NULL);
+
 		gst_pw_audio_format_probe_teardown(self->format_probe);
 
 		g_mutex_unlock(&(self->probe_process_mutex));
@@ -2201,6 +2212,12 @@ static void gst_pw_audio_sink_param_changed(void *data, uint32_t id, const struc
 		guint input_dsd_format_width = gst_pipewire_dsd_format_get_width(self->pw_audio_format.info.dsd_audio_info.format);
 		guint graph_dsd_format_width = gst_pipewire_dsd_format_get_width(self->pw_audio_format_from_changed_params.info.dsd_audio_info.format);
 
+		/* dsd_data_rate_multiplier is needed because the minimum necessary amount
+		 * of data that needs to be produced in the process callback depends on
+		 * dsd_conversion_buffer_size_multiplier *and* on the DSD rate. Any rate
+		 * higher than DSD64 needs an integer multiple of the indicated quantum size. */
+		self->dsd_data_rate_multiplier = self->pw_audio_format.info.dsd_audio_info.rate / GST_PIPEWIRE_DSD_DSD64_BYTE_RATE;
+
 		if (graph_dsd_format_width > input_dsd_format_width)
 			self->dsd_conversion_buffer_size_multiplier = graph_dsd_format_width / input_dsd_format_width;
 		else
@@ -2208,9 +2225,10 @@ static void gst_pw_audio_sink_param_changed(void *data, uint32_t id, const struc
 
 		GST_DEBUG_OBJECT(
 			self,
-			"additional DSD information:  input/graph DSD format width: %u/%u  conversion buffer size multiplier: %u",
+			"additional DSD information:  input/graph DSD format width: %u/%u  conversion buffer size multiplier: %u  data rate multiplier: %u",
 			input_dsd_format_width, graph_dsd_format_width,
-			self->dsd_conversion_buffer_size_multiplier
+			self->dsd_conversion_buffer_size_multiplier,
+			self->dsd_data_rate_multiplier
 		);
 	}
 }
@@ -2284,6 +2302,7 @@ static void gst_pw_audio_sink_contiguous_on_process_stream(void *data)
 	struct spa_data *inner_spa_data;
 	GstClockTime latency;
 	gint64 stream_delay_in_ns;
+	guint64 num_frames_to_produce;
 	gboolean produce_silence_quantum = TRUE;
 	gsize stride;
 
@@ -2377,6 +2396,28 @@ static void gst_pw_audio_sink_contiguous_on_process_stream(void *data)
 
 	stride = gst_pw_audio_format_get_stride(&(self->pw_audio_format_from_changed_params));
 
+	switch (self->pw_audio_format.audio_type)
+	{
+		case GST_PIPEWIRE_AUDIO_TYPE_PCM:
+			num_frames_to_produce = self->spa_rate_match->size;
+			break;
+
+		case GST_PIPEWIRE_AUDIO_TYPE_DSD:
+			// TODO: It is currently unclear why the *2 multiplication is necessary.
+			// It is known that commit c48a4bc166bfb5827ecea1195a8435458a3d8501 in
+			// pipewire-git ("pw-cat: fix DSF playback again") applies frame scaling,
+			// so perhaps something related needs to be done here. Alternatively,
+			// the "2" may be related to the number of channels.
+			num_frames_to_produce = self->spa_rate_match->size
+			                      * self->dsd_data_rate_multiplier
+			                      * self->dsd_conversion_buffer_size_multiplier
+			                      * 2;
+			break;
+
+		default:
+			g_assert_not_reached();
+	}
+
 	if (G_UNLIKELY(gst_pw_audio_queue_get_fill_level(self->audio_buffer_queue) == 0))
 	{
 		GST_DEBUG_OBJECT(self, "audio buffer queue empty/underrun; producing silence quantum");
@@ -2394,20 +2435,9 @@ static void gst_pw_audio_sink_contiguous_on_process_stream(void *data)
 				GstMapInfo map_info;
 				GstPwAudioQueueRetrievalDetails retrieval_details;
 				GstPwAudioQueueRetrievalResult retrieval_result;
-				GstClockTime num_frames_to_take;
 				GstClockTime current_time = GST_CLOCK_TIME_NONE;
 				gsize buffer_size;
 				gsize spa_data_chunk_byte_offset = 0;
-
-				// TODO: It is currently unclear why the *2 multiplication is necessary.
-				// It is known that commit c48a4bc166bfb5827ecea1195a8435458a3d8501 in
-				// pipewire-git ("pw-cat: fix DSF playback again") applies frame scaling,
-				// so perhaps something related needs to be done here. Alternatively,
-				// the "2" may be related to the number of channels.
-				if (self->pw_audio_format.audio_type == GST_PIPEWIRE_AUDIO_TYPE_PCM)
-					num_frames_to_take = self->spa_rate_match->size;
-				else
-					num_frames_to_take = self->spa_rate_match->size * self->dsd_conversion_buffer_size_multiplier * 2;
 
 				if (!self->synced_playback_started)
 				{
@@ -2421,7 +2451,7 @@ static void gst_pw_audio_sink_contiguous_on_process_stream(void *data)
 					);
 				}
 
-				retrieval_result = gst_pw_audio_queue_retrieve_buffer(self->audio_buffer_queue, num_frames_to_take, num_frames_to_take, current_time, latency, &retrieval_details);
+				retrieval_result = gst_pw_audio_queue_retrieve_buffer(self->audio_buffer_queue, num_frames_to_produce, num_frames_to_produce, current_time, latency, &retrieval_details);
 				if (G_UNLIKELY(retrieval_details.retrieved_buffer == NULL))
 				{
 					switch (retrieval_result)
@@ -2524,7 +2554,7 @@ static void gst_pw_audio_sink_contiguous_on_process_stream(void *data)
 
 	if (produce_silence_quantum)
 	{
-		guint64 num_silence_frames = self->spa_rate_match->size;
+		guint64 num_silence_frames = num_frames_to_produce;
 		guint64 num_silence_bytes = num_silence_frames * stride;
 
 		g_assert(num_silence_frames <= (inner_spa_data->maxsize / stride));
