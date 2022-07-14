@@ -1679,6 +1679,8 @@ GstPwAudioFormatProbeResult gst_pw_audio_format_probe_probe_audio_type(GstPwAudi
 
 	if (connect_ret == 0)
 	{
+		gboolean cancelled = FALSE;
+
 		g_mutex_lock(&(pw_audio_format_probe->mutex));
 
 		while (pw_audio_format_probe->last_state == PW_STREAM_STATE_UNCONNECTED)
@@ -1688,7 +1690,8 @@ GstPwAudioFormatProbeResult gst_pw_audio_format_probe_probe_audio_type(GstPwAudi
 				g_mutex_unlock(&(pw_audio_format_probe->mutex));
 				GST_DEBUG_OBJECT(pw_audio_format_probe, "probing cancelled");
 				probe_result = GST_PW_AUDIO_FORMAT_PROBE_RESULT_CANCELLED;
-				goto finish;
+				cancelled = TRUE;
+				break;
 			}
 			g_cond_wait(&(pw_audio_format_probe->cond), &(pw_audio_format_probe->mutex));
 		}
@@ -1698,6 +1701,9 @@ GstPwAudioFormatProbeResult gst_pw_audio_format_probe_probe_audio_type(GstPwAudi
 		pw_thread_loop_lock(pw_audio_format_probe->core->loop);
 		pw_stream_disconnect(pw_audio_format_probe->probing_stream);
 		pw_thread_loop_unlock(pw_audio_format_probe->core->loop);
+
+		if (cancelled)
+			goto finish;
 	}
 	else
 		GST_WARNING_OBJECT(pw_audio_format_probe, "error while trying to connect probing stream: %s (%d)", strerror(-connect_ret), -connect_ret);
