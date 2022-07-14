@@ -56,6 +56,9 @@ GstPipewireAudioType;
 
 // XXX: The DSD specific enum and struct are temporary until GStreamer upstream supports DSD
 
+#define GST_PIPEWIRE_DSD_DSD64_BITRATE (44100 * 64)
+#define GST_PIPEWIRE_DSD_DSD64_BYTE_RATE (GST_PIPEWIRE_DSD_DSD64_BITRATE / 8)
+
 typedef enum
 {
 	GST_PIPEWIRE_DSD_FORMAT_DSD_UNKNOWN = 0,

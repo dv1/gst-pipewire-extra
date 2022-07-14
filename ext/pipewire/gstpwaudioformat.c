@@ -515,7 +515,7 @@ GstCaps* gst_pw_audio_format_fixate_caps(GstCaps *caps)
 	{
 		gst_structure_fixate_field_string(s, "format", "DSD_U8");
 		gst_structure_fixate_field_nearest_int(s, "channels", 2);
-		gst_structure_fixate_field_nearest_int(s, "rate", 64 * 44100); /* 64 * 44100 = DSD64 */
+		gst_structure_fixate_field_nearest_int(s, "rate", GST_PIPEWIRE_DSD_DSD64_BYTE_RATE);
 	}
 	else
 	{
