@@ -552,6 +552,28 @@ GstPwAudioQueueRetrievalResult gst_pw_audio_queue_retrieve_buffer(
 			GstClockTime queued_data_start_pts = queue->priv->oldest_queued_data_pts + queued_data_pts_shift;
 			GstClockTime queued_data_end_pts = queued_data_start_pts + queued_duration;
 
+			GST_DEBUG_OBJECT(
+				queue,
+				"queued data window: %" GST_TIME_FORMAT " - %" GST_TIME_FORMAT "  "
+				"actual output buffer window: %" GST_TIME_FORMAT " - %" GST_TIME_FORMAT "  "
+				"num queued frames: %" G_GSIZE_FORMAT "  "
+				"queued duration: %" GST_TIME_FORMAT "  "
+				"ideal num output frames: %" G_GSIZE_FORMAT "  "
+				"min num output frames: %" G_GSIZE_FORMAT "  "
+				"actual num output frames: %" G_GSIZE_FORMAT "  "
+				"actual output duration: %" GST_TIME_FORMAT "  "
+				"queued data PTS shift: %" GST_TIME_FORMAT "  ",
+				GST_TIME_ARGS(queued_data_start_pts), GST_TIME_ARGS(queued_data_end_pts),
+				GST_TIME_ARGS(actual_output_buffer_start_pts), GST_TIME_ARGS(actual_output_buffer_end_pts),
+				num_queued_frames,
+				GST_TIME_ARGS(queued_duration),
+				ideal_num_output_frames,
+				min_num_output_frames,
+				actual_num_output_frames,
+				GST_TIME_ARGS(actual_output_duration),
+				GST_TIME_ARGS(queued_data_pts_shift)
+			);
+
 			if (actual_output_buffer_end_pts < queued_data_start_pts)
 			{
 				/* Simplest case: None of the data can be played yet, since the
@@ -559,27 +581,9 @@ GstPwAudioQueueRetrievalResult gst_pw_audio_queue_retrieve_buffer(
 				 * output window - there is no intersection between these two.
 				 * The queued data is fully valid, but can't be used yet. */
 
-				GST_LOG_OBJECT(
+				GST_DEBUG_OBJECT(
 					queue,
-					"queued data window is entirely in the future - cannot retrieve any queued data yet;  "
-					"queued data window: %" GST_TIME_FORMAT " - %" GST_TIME_FORMAT "  "
-					"actual output buffer window: %" GST_TIME_FORMAT " - %" GST_TIME_FORMAT "  "
-					"num queued frames: %" G_GSIZE_FORMAT "  "
-					"queued duration: %" GST_TIME_FORMAT "  "
-					"ideal num output frames: %" G_GSIZE_FORMAT "  "
-					"min num output frames: %" G_GSIZE_FORMAT "  "
-					"actual num output frames: %" G_GSIZE_FORMAT "  "
-					"actual output duration: %" GST_TIME_FORMAT "  "
-					"queued data PTS shift: %" GST_TIME_FORMAT "  ",
-					GST_TIME_ARGS(queued_data_start_pts), GST_TIME_ARGS(queued_data_end_pts),
-					GST_TIME_ARGS(actual_output_buffer_start_pts), GST_TIME_ARGS(actual_output_buffer_end_pts),
-					num_queued_frames,
-					GST_TIME_ARGS(queued_duration),
-					ideal_num_output_frames,
-					min_num_output_frames,
-					actual_num_output_frames,
-					GST_TIME_ARGS(actual_output_duration),
-					GST_TIME_ARGS(queued_data_pts_shift)
+					"queued data window is entirely in the future - cannot retrieve any queued data yet"
 				);
 
 				retrieval_details->retrieved_buffer = NULL;
@@ -594,27 +598,9 @@ GstPwAudioQueueRetrievalResult gst_pw_audio_queue_retrieve_buffer(
 				 * Since the queued data is expired, it will never be played, and
 				 * has to be flushed. */
 
-				GST_LOG_OBJECT(
+				GST_DEBUG_OBJECT(
 					queue,
-					"queued data window is entirely in the past - all queued data has expired;  "
-					"queued data window: %" GST_TIME_FORMAT " - %" GST_TIME_FORMAT "  "
-					"actual output buffer window: %" GST_TIME_FORMAT " - %" GST_TIME_FORMAT "  "
-					"num queued frames: %" G_GSIZE_FORMAT "  "
-					"queued duration: %" GST_TIME_FORMAT "  "
-					"ideal num output frames: %" G_GSIZE_FORMAT "  "
-					"min num output frames: %" G_GSIZE_FORMAT "  "
-					"actual num output frames: %" G_GSIZE_FORMAT "  "
-					"actual output duration: %" GST_TIME_FORMAT "  "
-					"queued data PTS shift: %" GST_TIME_FORMAT "  ",
-					GST_TIME_ARGS(queued_data_start_pts), GST_TIME_ARGS(queued_data_end_pts),
-					GST_TIME_ARGS(actual_output_buffer_start_pts), GST_TIME_ARGS(actual_output_buffer_end_pts),
-					num_queued_frames,
-					GST_TIME_ARGS(queued_duration),
-					ideal_num_output_frames,
-					min_num_output_frames,
-					actual_num_output_frames,
-					GST_TIME_ARGS(actual_output_duration),
-					GST_TIME_ARGS(queued_data_pts_shift)
+					"queued data window is entirely in the past - all queued data has expired"
 				);
 
 				gst_pw_audio_queue_flush(queue);
@@ -689,21 +675,8 @@ GstPwAudioQueueRetrievalResult gst_pw_audio_queue_retrieve_buffer(
 				{
 					GST_DEBUG_OBJECT(
 						queue,
-						"queued data window is (partially) in the present, but all data that could be put in retrieved buffer was clipped;  "
-						"queued data window: %" GST_TIME_FORMAT " - %" GST_TIME_FORMAT "  "
-						"actual output buffer window: %" GST_TIME_FORMAT " - %" GST_TIME_FORMAT "  "
-						"num queued frames: %" G_GSIZE_FORMAT "  "
-						"queued duration: %" GST_TIME_FORMAT "  "
-						"ideal num output frames: %" G_GSIZE_FORMAT "  "
-						"min num output frames: %" G_GSIZE_FORMAT "  "
-						"queued data PTS shift: %" GST_TIME_FORMAT "  ",
-						GST_TIME_ARGS(queued_data_start_pts), GST_TIME_ARGS(queued_data_end_pts),
-						GST_TIME_ARGS(actual_output_buffer_start_pts), GST_TIME_ARGS(actual_output_buffer_end_pts),
-						num_queued_frames,
-						GST_TIME_ARGS(queued_duration),
-						ideal_num_output_frames,
-						min_num_output_frames,
-						GST_TIME_ARGS(queued_data_pts_shift)
+						"queued data window is (partially) in the present, but all data"
+						" that could be put in retrieved buffer was clipped"
 					);
 					retrieval_details->retrieved_buffer = NULL;
 					return GST_PW_AUDIO_QUEUE_RETRIEVAL_RESULT_ALL_DATA_FOR_BUFFER_CLIPPED;
@@ -717,29 +690,7 @@ GstPwAudioQueueRetrievalResult gst_pw_audio_queue_retrieve_buffer(
 
 				GST_DEBUG_OBJECT(
 					queue,
-					"queued data window is (partially) in the present;  "
-					"queued data window: %" GST_TIME_FORMAT " - %" GST_TIME_FORMAT "  "
-					"actual output buffer window: %" GST_TIME_FORMAT " - %" GST_TIME_FORMAT "  "
-					"num queued frames: %" G_GSIZE_FORMAT "  "
-					"queued duration: %" GST_TIME_FORMAT "  "
-					"ideal num output frames: %" G_GSIZE_FORMAT "  "
-					"min num output frames: %" G_GSIZE_FORMAT "  "
-					"actual num output frames: %" G_GSIZE_FORMAT "  "
-					"actual output duration: %" GST_TIME_FORMAT "  "
-					"queued data PTS shift: %" GST_TIME_FORMAT "  "
-					"duration of expired data: %" GST_TIME_FORMAT "  "
-					"num silence frames to prepend/append: %" G_GSIZE_FORMAT "/%" G_GSIZE_FORMAT,
-					GST_TIME_ARGS(queued_data_start_pts), GST_TIME_ARGS(queued_data_end_pts),
-					GST_TIME_ARGS(actual_output_buffer_start_pts), GST_TIME_ARGS(actual_output_buffer_end_pts),
-					num_queued_frames,
-					GST_TIME_ARGS(queued_duration),
-					ideal_num_output_frames,
-					min_num_output_frames,
-					actual_num_output_frames,
-					GST_TIME_ARGS(actual_output_duration),
-					GST_TIME_ARGS(queued_data_pts_shift),
-					GST_TIME_ARGS(duration_of_expired_queued_data),
-					retrieval_details->num_silence_frames_to_prepend, retrieval_details->num_silence_frames_to_append
+					"queued data window is (partially) in the present"
 				);
 
 				retrieved_buffer = gst_adapter_take_buffer(queue->priv->contiguous_audio_buffer_queue, actual_num_output_frames * stride);
