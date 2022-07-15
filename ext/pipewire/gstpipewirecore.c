@@ -135,17 +135,33 @@ static void gst_pipewire_core_on_core_error(void *object, uint32_t id, int seque
 {
 	GstPipewireCore *self = GST_PIPEWIRE_CORE_CAST(object);
 
+	/* When the graph found no node to link to, log this with DEBUG level. This can happen during probing,
+	 * and missing nodes aren't an error then. And even when it _is_ an error, pw_stream already handles
+	 * link failures on its own, so we do not need to unnecessarily add error lines to the log. */
+	if (res == (-ENOENT))
+	{
+		GST_DEBUG_OBJECT(
+			self,
+			"PipeWire core got notified about a missing node error; most likely there is no node link the stream to;  id: %" PRIu32 "  sequence_number: %d  message: \"%s\"",
+			id,
+			sequence_number,
+			message
+		);
+	}
+	else
+	{
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wpedantic"
-	GST_ERROR_OBJECT(
-		self,
-		"PipeWire core error:  id: %" PRIu32 "  sequence_number: %d  POSIX error: \"%s\" (%d)  message: \"%s\"",
-		id,
-		sequence_number,
-		spa_strerror(res), res,
-		message
-	);
+		GST_ERROR_OBJECT(
+			self,
+			"PipeWire core got notified about error:  id: %" PRIu32 "  sequence_number: %d  POSIX error: \"%s\" (%d)  message: \"%s\"",
+			id,
+			sequence_number,
+			spa_strerror(res), res,
+			message
+		);
 #pragma GCC diagnostic pop
+	}
 
 	if (id == PW_ID_CORE)
 		self->last_error = res;
