@@ -67,6 +67,7 @@ struct _GstPwAudioQueueRetrievalDetails
 	GstBuffer *retrieved_buffer;
 	gsize num_silence_frames_to_prepend;
 	gsize num_silence_frames_to_append;
+	GstClockTimeDiff queued_data_to_retrival_pts_delta;
 };
 
 

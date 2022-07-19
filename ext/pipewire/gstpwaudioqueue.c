@@ -515,6 +515,11 @@ void gst_pw_audio_queue_push_buffer(GstPwAudioQueue *queue, GstBuffer *buffer)
  * writing silence after the retrieved_buffer data
  * (if num_silence_frames_to_append is nonzero).
  *
+ * #GstPwAudioQueueRetrievalDetails also contains the queued_data_to_retrival_pts_delta
+ * field. This specifies the distance between the timestamp of the oldest
+ * data in the queue and the retrieval_pts timestamp. This delta is useful
+ * for keeping track of clock drift.
+ *
  * queued_data_pts_shift shifts the queued data window into the future.
  * This is needed if there are additional latencies that aren't known until
  * right before this function is called. pw_stream delay is one example.
@@ -541,6 +546,8 @@ GstPwAudioQueueRetrievalResult gst_pw_audio_queue_retrieve_buffer(
 	g_assert(queue->priv->format_initialized);
 
 	stride = gst_pw_audio_format_get_stride(&(queue->priv->format));
+
+	retrieval_details->queued_data_to_retrival_pts_delta = 0;
 
 	if (queue->priv->is_contiguous)
 	{
@@ -673,13 +680,25 @@ GstPwAudioQueueRetrievalResult gst_pw_audio_queue_retrieve_buffer(
 				if (actual_output_buffer_start_pts < (queued_data_start_pts - skew_threshold))
 				{
 					silence_length = queued_data_start_pts - actual_output_buffer_start_pts;
-					duration_of_expired_queued_data = 0;
+				}
+				else if (actual_output_buffer_start_pts > (queued_data_start_pts + skew_threshold))
+				{
+					duration_of_expired_queued_data = actual_output_buffer_start_pts - queued_data_start_pts;
 				}
 				else
 				{
-					silence_length = 0;
-					if (actual_output_buffer_start_pts > (queued_data_start_pts + skew_threshold))
-						duration_of_expired_queued_data = actual_output_buffer_start_pts - queued_data_start_pts;
+					/* Calculate the delta between the PTS of the oldest queued data and the
+					 * retrieval PTS. This is useful for clock drift compensation; if the clock
+					 * of the PipeWire graph driver and the pipeline clock drift apart, then
+					 * so willl the distance between these two PTS. If for example the driver's
+					 * clock is slower, then less data will be consumed per second, data stays
+					 * for longer in the queue, and the oldest queued data PTS is incremented
+					 * less often. If the driver's clock is faster then the oldest queued data
+					 * PTS is incremented faster etc.
+					 * We set this quantity only if no skewing was performed; otherwise, the
+					 * delta may mistakenly get factored in twice (once by the skewing, another
+					 *time by the caller, who for example feeds the delta into a PID controller). */
+					retrieval_details->queued_data_to_retrival_pts_delta = GST_CLOCK_DIFF(queued_data_start_pts, actual_output_buffer_start_pts);
 				}
 
 				/* Silence needs to be prepended if the data lies in the future but is still
@@ -760,7 +779,8 @@ GstPwAudioQueueRetrievalResult gst_pw_audio_queue_retrieve_buffer(
 
 				GST_DEBUG_OBJECT(
 					queue,
-					"queued data window is (partially) in the present"
+					"queued data window is (partially) in the present; queued data to retrieval PTS delta: %" G_GINT64_FORMAT,
+					retrieval_details->queued_data_to_retrival_pts_delta
 				);
 
 				retrieved_buffer = gst_adapter_take_buffer(queue->priv->contiguous_audio_buffer_queue, actual_num_output_frames * stride);
