@@ -440,6 +440,8 @@ void gst_pw_audio_queue_push_buffer(GstPwAudioQueue *queue, GstBuffer *buffer)
  *    to indicate that no synchronized retrieval is needed.
  * @queued_data_pts_shift: By how much to shift the internal PTS that is
  *    associated with the queued data while computing which frames to retrieve.
+ * @skew_threshold: How much retrieval_pts and the PTS of the oldest stored data can
+ *    be drifted apart before skewing (= nullsamples are added or samples are skipped).
  * @retrieval_details: #GstPwAudioQueueRetrievalDetails structure to fill
  *    with details about the retrieved data.
  *
@@ -525,6 +527,7 @@ GstPwAudioQueueRetrievalResult gst_pw_audio_queue_retrieve_buffer(
 	gsize ideal_num_output_frames,
 	GstClockTime retrieval_pts,
 	GstClockTime queued_data_pts_shift,
+	GstClockTimeDiff skew_threshold,
 	GstPwAudioQueueRetrievalDetails *retrieval_details
 )
 {
@@ -533,6 +536,7 @@ GstPwAudioQueueRetrievalResult gst_pw_audio_queue_retrieve_buffer(
 	g_assert(queue != NULL);
 	g_assert(ideal_num_output_frames > 0);
 	g_assert(GST_CLOCK_TIME_IS_VALID(queued_data_pts_shift));
+	g_assert(GST_CLOCK_TIME_IS_VALID(skew_threshold));
 	g_assert(retrieval_details != NULL);
 	g_assert(queue->priv->format_initialized);
 
@@ -636,8 +640,8 @@ GstPwAudioQueueRetrievalResult gst_pw_audio_queue_retrieve_buffer(
 			}
 			else
 			{
-				GstClockTime silence_length;
-				GstClockTime duration_of_expired_queued_data;
+				GstClockTime silence_length = 0;
+				GstClockTime duration_of_expired_queued_data = 0;
 				gsize num_frames_with_silence;
 
 				/* At this point it is clear that at least *some* of the queued
@@ -658,8 +662,15 @@ GstPwAudioQueueRetrievalResult gst_pw_audio_queue_retrieve_buffer(
 				 * (We don't directly compute frames, but rather nanosecond durations,
 				 * since we are using PTS here. But conceptually we do throw away
 				 * expired frames and/or prepend silence frames.)
+				 *
+				 * Also, we factor in skew_threshold here. This allows the caller
+				 * to keep supplying a valid retrieval_pts without skipping samples
+				 * or adding nullsamples frequently (because retrieval_pts is likely
+				 * to be subject to jitter). This mechanism then also prevents the
+				 * drift from getting too bad, and automatically corrects a large
+				 * initial drift.
 				 */
-				if (queued_data_start_pts > actual_output_buffer_start_pts)
+				if (actual_output_buffer_start_pts < (queued_data_start_pts - skew_threshold))
 				{
 					silence_length = queued_data_start_pts - actual_output_buffer_start_pts;
 					duration_of_expired_queued_data = 0;
@@ -667,7 +678,8 @@ GstPwAudioQueueRetrievalResult gst_pw_audio_queue_retrieve_buffer(
 				else
 				{
 					silence_length = 0;
-					duration_of_expired_queued_data = actual_output_buffer_start_pts - queued_data_start_pts;
+					if (actual_output_buffer_start_pts > (queued_data_start_pts + skew_threshold))
+						duration_of_expired_queued_data = actual_output_buffer_start_pts - queued_data_start_pts;
 				}
 
 				/* Silence needs to be prepended if the data lies in the future but is still
@@ -678,6 +690,14 @@ GstPwAudioQueueRetrievalResult gst_pw_audio_queue_retrieve_buffer(
 				if (silence_length > 0)
 				{
 					retrieval_details->num_silence_frames_to_prepend = gst_pw_audio_format_calculate_num_frames_from_duration(&(queue->priv->format), silence_length);
+
+					GST_LOG_OBJECT(
+						queue,
+						"prepending %f ms (=%" G_GSIZE_FORMAT " frame(s)) of silence",
+						silence_length / ((gdouble)GST_MSECOND),
+						retrieval_details->num_silence_frames_to_prepend
+					);
+
 					actual_num_output_frames -= retrieval_details->num_silence_frames_to_prepend;
 					actual_output_duration -= silence_length;
 				}
@@ -690,6 +710,14 @@ GstPwAudioQueueRetrievalResult gst_pw_audio_queue_retrieve_buffer(
 				if (duration_of_expired_queued_data > 0)
 				{
 					gsize num_frames_to_flush = gst_pw_audio_format_calculate_num_frames_from_duration(&(queue->priv->format), duration_of_expired_queued_data);
+
+					GST_LOG_OBJECT(
+						queue,
+						"the first %f ms (=%" G_GSIZE_FORMAT " frame(s)) of data in the queue are expired; skipping it",
+						duration_of_expired_queued_data / ((gdouble)GST_MSECOND),
+						num_frames_to_flush
+					);
+
 					num_frames_to_flush = MIN(num_frames_to_flush, actual_num_output_frames);
 					gst_adapter_flush(queue->priv->contiguous_audio_buffer_queue, num_frames_to_flush * stride);
 
@@ -772,14 +800,11 @@ GstPwAudioQueueRetrievalResult gst_pw_audio_queue_retrieve_buffer(
 		/* Ensure that the buffer is writable to safely set its duration and PTS. */
 		retrieved_buffer = gst_buffer_make_writable(retrieved_buffer);
 
+		GST_BUFFER_PTS(retrieved_buffer) = retrieval_pts;
 		GST_BUFFER_DURATION(retrieved_buffer) = actual_output_duration;
 
 		if (GST_CLOCK_TIME_IS_VALID(queue->priv->oldest_queued_data_pts))
 		{
-			/* We took the oldest (actual_num_output_frames) frames from the queue.
-			 * Consequently, the PTS of the resulting gstbuffer must equal
-			 * oldest_queued_data_pts (with the queued data PTS shift applied). */
-			GST_BUFFER_PTS(retrieved_buffer) = queue->priv->oldest_queued_data_pts + queued_data_pts_shift;
 			/* Increment the oldest PTS since we just retrieved the oldest data.
 			 * That way, this timestamp remains valid for future retrievals. */
 			queue->priv->oldest_queued_data_pts += GST_BUFFER_DURATION(retrieved_buffer);

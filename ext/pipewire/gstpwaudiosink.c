@@ -74,6 +74,7 @@ enum
 
 	PROP_PROVIDE_CLOCK,
 	PROP_ALIGNMENT_THRESHOLD,
+	PROP_SKEW_THRESHOLD,
 	PROP_TARGET_OBJECT_ID,
 	PROP_STREAM_PROPERTIES,
 	PROP_SOCKET_FD,
@@ -89,6 +90,7 @@ enum
 
 #define DEFAULT_PROVIDE_CLOCK TRUE
 #define DEFAULT_ALIGNMENT_THRESHOLD (GST_MSECOND * 40)
+#define DEFAULT_SKEW_THRESHOLD (GST_MSECOND * 1)
 #define DEFAULT_TARGET_OBJECT_ID PW_ID_ANY
 #define DEFAULT_STREAM_PROPERTIES NULL
 #define DEFAULT_SOCKET_FD (-1)
@@ -116,6 +118,7 @@ struct _GstPwAudioSink
 	/** Object properties **/
 
 	GstClockTimeDiff alignment_threshold;
+	GstClockTimeDiff skew_threshold;
 	uint32_t target_object_id;
 	GstStructure *stream_properties;
 	int socket_fd;
@@ -219,6 +222,11 @@ struct _GstPwAudioSink
 	/* Quantum size in driver ticks. Set in the io_changed callback
 	 * when it is passed SPA_IO_Position information. */
 	guint64 quantum_size;
+	/* Snapshot of skew_threshold, done in gst_pw_audio_sink_start().
+	 * This is done to prevent potential race conditions if the user
+	 * changes the skew threshold property while it is being read.
+	 * Having this copy eliminates the need for a mutex lock. */
+	GstClockTimeDiff skew_threshold_snapshot;
 };
 
 
@@ -382,6 +390,20 @@ static void gst_pw_audio_sink_class_init(GstPwAudioSinkClass *klass)
 
 	g_object_class_install_property(
 		object_class,
+		PROP_SKEW_THRESHOLD,
+		g_param_spec_int64(
+			"skew-threshold",
+			"Skew threshold",
+			"How far apart current pipeline clock time can be from the timestamp of queued "
+			"data before skewing is performed to compensate the drift, in nanoseconds",
+			0, G_MAXINT64,
+			DEFAULT_SKEW_THRESHOLD,
+			(GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)
+		)
+	);
+
+	g_object_class_install_property(
+		object_class,
 		PROP_TARGET_OBJECT_ID,
 		g_param_spec_uint(
 			"target-object-id",
@@ -492,6 +514,7 @@ static void gst_pw_audio_sink_class_init(GstPwAudioSinkClass *klass)
 static void gst_pw_audio_sink_init(GstPwAudioSink *self)
 {
 	self->alignment_threshold = DEFAULT_ALIGNMENT_THRESHOLD;
+	self->skew_threshold = DEFAULT_SKEW_THRESHOLD;
 	self->target_object_id = DEFAULT_TARGET_OBJECT_ID;
 	self->stream_properties = DEFAULT_STREAM_PROPERTIES;
 	self->socket_fd = DEFAULT_SOCKET_FD;
@@ -582,6 +605,12 @@ static void gst_pw_audio_sink_set_property(GObject *object, guint prop_id, GValu
 			GST_OBJECT_UNLOCK(self);
 			break;
 
+		case PROP_SKEW_THRESHOLD:
+			GST_OBJECT_LOCK(self);
+			self->skew_threshold = g_value_get_int64(value);
+			GST_OBJECT_UNLOCK(self);
+			break;
+
 		case PROP_TARGET_OBJECT_ID:
 			GST_OBJECT_LOCK(self);
 			self->target_object_id = g_value_get_uint(value);
@@ -668,6 +697,12 @@ static void gst_pw_audio_sink_get_property(GObject *object, guint prop_id, GValu
 		case PROP_ALIGNMENT_THRESHOLD:
 			GST_OBJECT_LOCK(self);
 			g_value_set_int64(value, self->alignment_threshold);
+			GST_OBJECT_UNLOCK(self);
+			break;
+
+		case PROP_SKEW_THRESHOLD:
+			GST_OBJECT_LOCK(self);
+			g_value_set_int64(value, self->skew_threshold);
 			GST_OBJECT_UNLOCK(self);
 			break;
 
@@ -1322,6 +1357,7 @@ static gboolean gst_pw_audio_sink_start(GstBaseSink *basesink)
 	GST_OBJECT_LOCK(self);
 	socket_fd = self->socket_fd;
 	self->max_queue_fill_level = self->audio_buffer_queue_length * GST_MSECOND;
+	self->skew_threshold_snapshot = self->skew_threshold;
 	GST_OBJECT_UNLOCK(self);
 
 	GST_DEBUG_OBJECT(self, "starting PipeWire core");
@@ -2369,6 +2405,13 @@ static void gst_pw_audio_sink_contiguous_on_process_stream(void *data)
 		if (G_LIKELY(stream_delay_in_ns >= time_since_delay_measurement))
 		{
 			refined_stream_delay_in_ns = stream_delay_in_ns - time_since_delay_measurement;
+			GST_LOG_OBJECT(
+				self,
+				"original / refined stream delay: %" GST_TIME_FORMAT " / %" GST_TIME_FORMAT " (delta: %" G_GINT64_FORMAT ")",
+				GST_TIME_ARGS(stream_delay_in_ns),
+				GST_TIME_ARGS(refined_stream_delay_in_ns),
+				time_since_delay_measurement
+			);
 		}
 		else
 		{
@@ -2469,19 +2512,26 @@ static void gst_pw_audio_sink_contiguous_on_process_stream(void *data)
 				gsize buffer_size;
 				gsize spa_data_chunk_byte_offset = 0;
 
-				if (!self->synced_playback_started)
-				{
-					current_time = gst_clock_get_time(GST_ELEMENT_CLOCK(self));
-					GST_LOG_OBJECT(
-						self,
-						"current time: %" GST_TIME_FORMAT "  "
-						"latency: %" GST_TIME_FORMAT,
-						GST_TIME_ARGS(current_time),
-						GST_TIME_ARGS(latency)
-					);
-				}
+				GstClockTimeDiff effective_skew_threshold = self->synced_playback_started ? self->skew_threshold_snapshot : 0;
 
-				retrieval_result = gst_pw_audio_queue_retrieve_buffer(self->audio_buffer_queue, num_frames_to_produce, num_frames_to_produce, current_time, latency, &retrieval_details);
+				current_time = gst_clock_get_time(GST_ELEMENT_CLOCK(self));
+				GST_LOG_OBJECT(
+					self,
+					"current time: %" GST_TIME_FORMAT "  "
+					"latency: %" GST_TIME_FORMAT,
+					GST_TIME_ARGS(current_time),
+					GST_TIME_ARGS(latency)
+				);
+
+				retrieval_result = gst_pw_audio_queue_retrieve_buffer(
+					self->audio_buffer_queue,
+					num_frames_to_produce,
+					num_frames_to_produce,
+					current_time,
+					latency,
+					effective_skew_threshold,
+					&retrieval_details
+				);
 				if (G_UNLIKELY(retrieval_details.retrieved_buffer == NULL))
 				{
 					switch (retrieval_result)
