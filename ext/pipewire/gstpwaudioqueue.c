@@ -410,7 +410,7 @@ void gst_pw_audio_queue_push_buffer(GstPwAudioQueue *queue, GstBuffer *buffer)
  * @queue: a #GstPwAudioQueue
  * @min_num_output_frames: Minimum number of output frames required.
  * @ideal_num_output_frames: How many frames the output should ideally contain.
- * @current_time: Timestamp of the current time. Can be #GST_CLOCK_TIME_NONE
+ * @retrieval_pts: Timestamp of the data to retrieve. Can be #GST_CLOCK_TIME_NONE
  *    to indicate that no synchronized retrieval is needed.
  * @queued_data_pts_shift: By how much to shift the internal PTS that is
  *    associated with the queued data while computing which frames to retrieve.
@@ -437,10 +437,10 @@ void gst_pw_audio_queue_push_buffer(GstPwAudioQueue *queue, GstBuffer *buffer)
  *
  * This oldest PTS together with the total amount of queued data form the
  * "queued data window". That's the window when data is available for retrieval.
- * current_time and ideal_num_output_frames form "output window". That's the
- * window that shall contain output data. Actual data retrieval happens when
- * these two windows intersect. This function computes that intersection, and
- * if there is one, performs the retrieval.
+ * retrieval_pts and ideal_num_output_frames form "output window". That's the
+ * time window of the data the caller is interested in. Actual data retrieval
+ * happens when these two windows intersect. This function computes that intersection,
+ * and if there is one, performs the retrieval of that intersection.
  * 
  * The window intersection may reveal that only a subset of the output window
  * can get actual data from the queue. There are two possible types of partial
@@ -497,7 +497,7 @@ GstPwAudioQueueRetrievalResult gst_pw_audio_queue_retrieve_buffer(
 	GstPwAudioQueue *queue,
 	gsize min_num_output_frames,
 	gsize ideal_num_output_frames,
-	GstClockTime current_time,
+	GstClockTime retrieval_pts,
 	GstClockTime queued_data_pts_shift,
 	GstPwAudioQueueRetrievalDetails *retrieval_details
 )
@@ -530,10 +530,10 @@ GstPwAudioQueueRetrievalResult gst_pw_audio_queue_retrieve_buffer(
 		queued_duration = gst_pw_audio_format_calculate_duration_from_num_frames(&(queue->priv->format), num_queued_frames);
 		actual_output_duration = gst_pw_audio_format_calculate_duration_from_num_frames(&(queue->priv->format), actual_num_output_frames);
 
-		if (GST_CLOCK_TIME_IS_VALID(current_time) && GST_CLOCK_TIME_IS_VALID(queue->priv->oldest_queued_data_pts))
+		if (GST_CLOCK_TIME_IS_VALID(retrieval_pts) && GST_CLOCK_TIME_IS_VALID(queue->priv->oldest_queued_data_pts))
 		{
 			/* All required timestamps are valid. We can synchronize
-			 * the output against the supplied current_time. */
+			 * the output against the supplied retrieval_pts. */
 
 			/* As mentioned in the documentatio, these PTS define two "windows":
 			 *
@@ -547,7 +547,7 @@ GstPwAudioQueueRetrievalResult gst_pw_audio_queue_retrieve_buffer(
 			 * to be added. The intersection defines the block of data
 			 * that has to be retrieved from the contiguous queue.
 			 */
-			GstClockTime actual_output_buffer_start_pts = current_time;
+			GstClockTime actual_output_buffer_start_pts = retrieval_pts;
 			GstClockTime actual_output_buffer_end_pts = actual_output_buffer_start_pts + actual_output_duration;
 			GstClockTime queued_data_start_pts = queue->priv->oldest_queued_data_pts + queued_data_pts_shift;
 			GstClockTime queued_data_end_pts = queued_data_start_pts + queued_duration;
@@ -700,7 +700,7 @@ GstPwAudioQueueRetrievalResult gst_pw_audio_queue_retrieve_buffer(
 		{
 			/* Either, the queued data did not contain valid timestamps, or the
 			 * user does not want synchronized retrieval (indicated by an invalid
-			 * current_time value). The latter case typically happens because the
+			 * retrieval_pts value). The latter case typically happens because the
 			 * output is already synced, or because synced output is turned off.
 			 * Behave like a simple queue in these cases. */
 			retrieved_buffer = gst_adapter_take_buffer(queue->priv->contiguous_audio_buffer_queue, actual_num_output_frames * stride);

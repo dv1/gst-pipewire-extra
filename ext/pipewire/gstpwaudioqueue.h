@@ -99,8 +99,8 @@ GstPwAudioQueueRetrievalResult gst_pw_audio_queue_retrieve_buffer(
 	GstPwAudioQueue *queue,
 	gsize min_num_output_frames,
 	gsize ideal_num_output_frames,
-	GstClockTime current_time,
-	GstClockTime buffer_pts_shift,
+	GstClockTime retrieval_pts,
+	GstClockTime queued_data_pts_shift,
 	GstPwAudioQueueRetrievalDetails *retrieval_details
 );
 
