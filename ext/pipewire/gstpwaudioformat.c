@@ -1687,7 +1687,6 @@ GstPwAudioFormatProbeResult gst_pw_audio_format_probe_probe_audio_type(GstPwAudi
 		{
 			if (pw_audio_format_probe->cancelled)
 			{
-				g_mutex_unlock(&(pw_audio_format_probe->mutex));
 				GST_DEBUG_OBJECT(pw_audio_format_probe, "probing cancelled");
 				probe_result = GST_PW_AUDIO_FORMAT_PROBE_RESULT_CANCELLED;
 				cancelled = TRUE;
