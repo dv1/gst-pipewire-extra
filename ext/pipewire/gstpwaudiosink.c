@@ -1845,7 +1845,7 @@ static GstFlowReturn gst_pw_audio_sink_render_contiguous(GstPwAudioSink *self, G
 
 			/* Estimate the next PTS. If the stream PTS are properly aligned, then the next
 			 * running-time PTS will match this estimate. Otherwise we have to compensate. */
-			self->last_running_time_pts_end = GST_BUFFER_PTS(incoming_buffer_copy) + GST_BUFFER_DURATION(incoming_buffer_copy);
+			self->last_running_time_pts_end = running_time_pts_begin + GST_BUFFER_DURATION(incoming_buffer_copy);
 
 			GST_LOG_OBJECT(
 				self,
