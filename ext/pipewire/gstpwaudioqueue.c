@@ -692,9 +692,25 @@ GstPwAudioQueueRetrievalResult gst_pw_audio_queue_retrieve_buffer(
 					gsize num_frames_to_flush = gst_pw_audio_format_calculate_num_frames_from_duration(&(queue->priv->format), duration_of_expired_queued_data);
 					num_frames_to_flush = MIN(num_frames_to_flush, actual_num_output_frames);
 					gst_adapter_flush(queue->priv->contiguous_audio_buffer_queue, num_frames_to_flush * stride);
-					g_assert(actual_num_output_frames >= num_frames_to_flush);
-					actual_num_output_frames -= num_frames_to_flush;
-					actual_output_duration -= duration_of_expired_queued_data;
+
+					if (GST_CLOCK_TIME_IS_VALID(queue->priv->oldest_queued_data_pts))
+					{
+						GstClockTime updated_pts = queue->priv->oldest_queued_data_pts + duration_of_expired_queued_data;
+
+						GST_LOG_OBJECT(
+							queue,
+							"updating oldest queued data PTS: %" GST_TIME_FORMAT " -> %" GST_TIME_FORMAT,
+							GST_TIME_ARGS(queue->priv->oldest_queued_data_pts),
+							GST_TIME_ARGS(updated_pts)
+						);
+
+						queue->priv->oldest_queued_data_pts = updated_pts;
+					}
+
+					num_queued_frames = gst_adapter_available(queue->priv->contiguous_audio_buffer_queue) / stride;
+					actual_num_output_frames = MIN(ideal_num_output_frames, num_queued_frames);
+					queued_duration = gst_pw_audio_format_calculate_duration_from_num_frames(&(queue->priv->format), num_queued_frames);
+					actual_output_duration = gst_pw_audio_format_calculate_duration_from_num_frames(&(queue->priv->format), actual_num_output_frames);
 				}
 
 				if (G_UNLIKELY(actual_num_output_frames == 0))
