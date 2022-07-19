@@ -2302,6 +2302,7 @@ static void gst_pw_audio_sink_contiguous_on_process_stream(void *data)
 	struct spa_data *inner_spa_data;
 	GstClockTime latency;
 	gint64 stream_delay_in_ns;
+	gint64 refined_stream_delay_in_ns;
 	guint64 num_frames_to_produce;
 	gboolean produce_silence_quantum = TRUE;
 	gsize stride;
@@ -2353,15 +2354,44 @@ static void gst_pw_audio_sink_contiguous_on_process_stream(void *data)
 
 	UNLOCK_LATENCY_MUTEX(self);
 
-	/* Subtract the stream_delay_in_ns value from the latency value.
+	/* stream_time.delay was measured at the stream_time.now timestamp.
+	 * That timestamp was recorded using the monotonic system clock.
+	 * To further refine the delay, calculate how much time has elapsed
+	 * since stream_time.delay was sampled. */
+
+	{
+		struct timespec ts;
+		gint64 time_since_delay_measurement;
+
+		clock_gettime(CLOCK_MONOTONIC, &ts);
+		time_since_delay_measurement = SPA_TIMESPEC_TO_NSEC(&ts) - stream_time.now;
+
+		if (G_LIKELY(stream_delay_in_ns >= time_since_delay_measurement))
+		{
+			refined_stream_delay_in_ns = stream_delay_in_ns - time_since_delay_measurement;
+		}
+		else
+		{
+			GST_WARNING_OBJECT(
+				self,
+				"time since delay measurement (%" G_GINT64_FORMAT ") exceeds stream delay (%" G_GINT64_FORMAT "); underrun is likely to have occurred; setting delay to 0 and resynchronizing",
+				time_since_delay_measurement,
+				stream_delay_in_ns
+			);
+			refined_stream_delay_in_ns = 0;
+			self->synced_playback_started = FALSE;
+		}
+	}
+
+	/* Subtract the refined_stream_delay_in_ns value from the latency value.
 	 * The data we put into the SPA data chunks here now will be placed
-	 * in stream_delay_in_ns nanoseconds, so it is already implicitly
-	 * factored into our output. stream_delay_in_ns is added to the
+	 * in refined_stream_delay_in_ns nanoseconds, so it is already implicitly
+	 * factored into our output. refined_stream_delay_in_ns is added to the
 	 * GStreamer base sink latency for GstBaseSink's own purposes and
 	 * for correctly responding to latency queries. It is not meant
 	 * for the gst_pw_audio_queue_retrieve_buffer() calls here. */
-	if (G_LIKELY((GstClockTimeDiff)latency >= stream_delay_in_ns))
-		latency -= stream_delay_in_ns;
+	if (G_LIKELY((GstClockTimeDiff)latency >= refined_stream_delay_in_ns))
+		latency -= refined_stream_delay_in_ns;
 	else
 		latency = 0;
 
