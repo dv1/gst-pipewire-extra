@@ -396,12 +396,38 @@ void gst_pw_audio_queue_push_buffer(GstPwAudioQueue *queue, GstBuffer *buffer)
 		gst_queue_array_push_tail(queue->priv->packetized_audio_buffer_queue, buffer);
 	}
 
-	/* If the oldest PTS is not set yet, do so now. We'll use that PTS in
-	 * gst_pw_audio_queue_retrieve_buffer() to know if, when, and how much
-	 * of the queued data we need to access. (If the data isn't contiguous
-	 * though this timestamp is not used by that function.) */
-	if (!GST_CLOCK_TIME_IS_VALID(queue->priv->oldest_queued_data_pts))
-		queue->priv->oldest_queued_data_pts = buffer_pts;
+	if (GST_CLOCK_TIME_IS_VALID(buffer_pts))
+	{
+		/* We need to update the PTS of the oldest (= first) data available in the queue.
+		 * To do this, calculate the PTS of the *newest* data - that is, the PTS that
+		 * is right at the end of the buffer that was just supplied - and subtract the
+		 * current fill level from it. Since the queued data is contiguous (there are
+		 * no "holes" in the queue), (newest_pts - current_fill_level) must equal the
+		 * oldest queued PTS. */
+		GstClockTime newest_pts = buffer_pts + GST_BUFFER_DURATION(buffer);
+		GstClockTime oldest_queued_data_pts = newest_pts - queue->current_fill_level;
+
+		/* If an oldest queued PTS is already known, check if the oldest PTS we just
+		 * calculated differs significantly (by >= 1ms). Only log the update if it does. */
+		if (GST_CLOCK_TIME_IS_VALID(queue->priv->oldest_queued_data_pts))
+		{
+			GstClockTimeDiff update_delta = GST_CLOCK_DIFF(queue->priv->oldest_queued_data_pts, oldest_queued_data_pts);
+
+			if (ABS(update_delta) > (1 * GST_MSECOND))
+			{
+				GST_DEBUG_OBJECT(
+					queue,
+					"updating oldest queued data PTS from: %" GST_TIME_FORMAT " to: %" GST_TIME_FORMAT " (delta: %" G_GINT64_FORMAT ")",
+					GST_TIME_ARGS(queue->priv->oldest_queued_data_pts),
+					GST_TIME_ARGS(oldest_queued_data_pts),
+					update_delta
+				);
+			}
+		}
+
+		/* Finally, store the updated PTS. */
+		queue->priv->oldest_queued_data_pts = oldest_queued_data_pts;
+	}
 }
 
 
