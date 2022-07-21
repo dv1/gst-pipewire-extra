@@ -178,7 +178,7 @@ struct _GstPwAudioSink
 	 * if the pw_stream is connected. */
 	gboolean synced_playback_started;
 	/* Used for checking the buffer PTS for discontinuities. */
-	GstClockTime last_running_time_pts_end;
+	GstClockTime expected_next_running_time_pts;
 	/* Latency in nanoseconds, based on the value of stream_delay_in_ns. */
 	GstClockTime latency;
 	/* The latency_mutex synchronizes access to latency and stream_delay_in_ns. */
@@ -538,7 +538,7 @@ static void gst_pw_audio_sink_init(GstPwAudioSink *self)
 	self->paused = 0;
 	self->notify_upstream_about_stream_delay = 0;
 	self->synced_playback_started = FALSE;
-	self->last_running_time_pts_end = GST_CLOCK_TIME_NONE;
+	self->expected_next_running_time_pts = GST_CLOCK_TIME_NONE;
 	self->latency = 0;
 	g_mutex_init(&(self->latency_mutex));
 
@@ -1779,20 +1779,19 @@ static GstFlowReturn gst_pw_audio_sink_render_contiguous(GstPwAudioSink *self, G
 
 		if (GST_CLOCK_TIME_IS_VALID(clipped_pts_begin) && GST_CLOCK_TIME_IS_VALID(clipped_pts_end))
 		{
-			GstClockTime running_time_pts_begin, running_time_pts_end;
+			GstClockTime running_time_pts;
 			gsize clipped_begin_frames = 0, clipped_end_frames = 0;
 			gsize original_num_frames;
 			GstClockTime begin_clip_duration, end_clip_duration;
 			GstClockTime pw_base_time;
 
-			running_time_pts_begin = gst_segment_to_running_time(segment, GST_FORMAT_TIME, clipped_pts_begin);
-			running_time_pts_end = gst_segment_to_running_time(segment, GST_FORMAT_TIME, clipped_pts_end);
+			running_time_pts = gst_segment_to_running_time(segment, GST_FORMAT_TIME, clipped_pts_begin);
 
 			pw_base_time = GST_ELEMENT_CAST(self)->base_time;
 
-			if (GST_CLOCK_TIME_IS_VALID(self->last_running_time_pts_end))
+			if (GST_CLOCK_TIME_IS_VALID(self->expected_next_running_time_pts))
 			{
-				GstClockTimeDiff discontinuity = GST_CLOCK_DIFF(self->last_running_time_pts_end, running_time_pts_begin);
+				GstClockTimeDiff discontinuity = GST_CLOCK_DIFF(self->expected_next_running_time_pts, running_time_pts);
 
 				// TODO: Accumulate discontinuity, and only perform compensation
 				// if the accumulated discontinuity is nonzero after a while.
@@ -1812,8 +1811,7 @@ static GstFlowReturn gst_pw_audio_sink_render_contiguous(GstPwAudioSink *self, G
 					if (discontinuity > 0)
 					{
 						/* Shift the running-time PTS to make room for the extra silence frames. */
-						running_time_pts_begin += discontinuity;
-						running_time_pts_end += discontinuity;
+						running_time_pts += discontinuity;
 						num_silence_frames_to_insert = gst_pw_audio_format_calculate_num_frames_from_duration(&(self->pw_audio_format), discontinuity);
 						GST_DEBUG_OBJECT(
 							self,
@@ -1827,10 +1825,10 @@ static GstFlowReturn gst_pw_audio_sink_render_contiguous(GstPwAudioSink *self, G
 						/* We need to clip the first N nanoseconds (N = -discontinuity), since these
 						 * overlap with already played data. The start of the remaining data needs to
 						 * be shifted into the future by (-discontinuity) nanoseconds to align it with
-						 * the previous data and to account for the clipped amount. running_time_pts_end
-						 * is not modified, however, since the overall duration of the data to play is
-						 * reduced by (-discontinuity) nanoseconds by the clipping. */
-						running_time_pts_begin += (-discontinuity);
+						 * the previous data and to account for the clipped amount. clipped_pts_end
+						 * is not modified, however, since the overall duration of the data to play
+						 * is reduced by (-discontinuity) nanoseconds by the clipping. */
+						running_time_pts += (-discontinuity);
 						clipped_pts_begin += (-discontinuity);
 						GST_DEBUG_OBJECT(
 							self,
@@ -1841,8 +1839,7 @@ static GstFlowReturn gst_pw_audio_sink_render_contiguous(GstPwAudioSink *self, G
 				}
 			}
 
-			g_assert(GST_CLOCK_TIME_IS_VALID(running_time_pts_begin));
-			g_assert(GST_CLOCK_TIME_IS_VALID(running_time_pts_end));
+			g_assert(GST_CLOCK_TIME_IS_VALID(running_time_pts));
 
 			begin_clip_duration = clipped_pts_begin - pts_begin;
 			end_clip_duration = pts_end - clipped_pts_end;
@@ -1874,19 +1871,20 @@ static GstFlowReturn gst_pw_audio_sink_render_contiguous(GstPwAudioSink *self, G
 				gst_buffer_get_size(original_incoming_buffer) - (clipped_begin_frames + clipped_end_frames) * stride
 			);
 
-			/* Set the incoming_buffer_copy's timestamp, translated to clock-time
-			 * by adding pw_base_time to running_time_pts_begin. */
-			GST_BUFFER_PTS(incoming_buffer_copy) = pw_base_time + running_time_pts_begin;
+			/* Set the incoming_buffer_copy's timestamp, translated to
+			 * clock-time by adding pw_base_time to running_time_pts. */
+			GST_BUFFER_PTS(incoming_buffer_copy) = pw_base_time + running_time_pts;
 			GST_BUFFER_DURATION(incoming_buffer_copy) = clipped_pts_end - clipped_pts_begin;
 
 			/* Estimate the next PTS. If the stream PTS are properly aligned, then the next
-			 * running-time PTS will match this estimate. Otherwise we have to compensate. */
-			self->last_running_time_pts_end = running_time_pts_begin + GST_BUFFER_DURATION(incoming_buffer_copy);
+			 * running-time PTS will match this estimate. Otherwise, there is a misalignment,
+			 * and we have to compensate. */
+			self->expected_next_running_time_pts = running_time_pts + GST_BUFFER_DURATION(incoming_buffer_copy);
 
 			GST_LOG_OBJECT(
 				self,
-				"running time begin/end PTS: %" GST_TIME_FORMAT "/%" GST_TIME_FORMAT,
-				GST_TIME_ARGS(running_time_pts_begin), GST_TIME_ARGS(running_time_pts_end)
+				"current and next expected running time: %" GST_TIME_FORMAT " / %" GST_TIME_FORMAT,
+				GST_TIME_ARGS(running_time_pts), GST_TIME_ARGS(self->expected_next_running_time_pts)
 			);
 
 			GST_LOG_OBJECT(
@@ -1924,8 +1922,9 @@ static GstFlowReturn gst_pw_audio_sink_render_contiguous(GstPwAudioSink *self, G
 		 */
 		incoming_buffer_copy = gst_buffer_copy(original_incoming_buffer);
 		GST_BUFFER_PTS(incoming_buffer_copy) = GST_CLOCK_TIME_NONE;
-		/* Also discard the last running-time PTS to avoid incorrect discontinuity calculations. */
-		self->last_running_time_pts_end = GST_CLOCK_TIME_NONE;
+		/* Also discard the expected_next_running_time_pts to avoid
+		 * incorrect discontinuity calculations. */
+		self->expected_next_running_time_pts = GST_CLOCK_TIME_NONE;
 	}
 
 	while (TRUE)
@@ -2145,7 +2144,7 @@ static void gst_pw_audio_sink_reset_audio_buffer_queue_unlocked(GstPwAudioSink *
 	 * any synchronized playback of the stream that was going on earlier,
 	 * and there's no more old data to check for alignment with new data. */
 	self->synced_playback_started = FALSE;
-	self->last_running_time_pts_end = GST_CLOCK_TIME_NONE;
+	self->expected_next_running_time_pts = GST_CLOCK_TIME_NONE;
 }
 
 
