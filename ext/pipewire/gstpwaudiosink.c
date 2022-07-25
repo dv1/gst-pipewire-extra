@@ -2311,9 +2311,30 @@ static void gst_pw_audio_sink_io_changed(void *data, uint32_t id, void *area, G_
 		{
 			/* Retrieve SPA IO RateMatch pointer. The referred rate_match structure does not
 			 * yet contain valid values at this point. But when gst_pw_audio_sink_on_process_stream()
-			 * is called, it does, so it is usable there. */
+			 * is called, it does, so it is usable there.
+			 * The rate matching ASRC is disabled by default, and is enabled explicitly by setting
+			 * the SPA_IO_RATE_MATCH_FLAG_ACTIVE flag. Once enabled, the "rate" field tweaks the ASRC
+			 * ratio. The ASRC's ratio is multiplied by this field if the flag is active. This means
+			 * that if for example rate is 1.1, then 110% of the normal amount of data is generated.
+			 * So, if the audio output is falling behind the reference signal, rate needs to be >1.0,
+			 * and if it is ahead of the reference signal, it needs to be <1.0. The rate field can be
+			 * set in the process callback (see gst_pw_audio_sink_contiguous_on_process_stream). */
 
 			self->spa_rate_match = (struct spa_io_rate_match *)area;
+
+			if (self->stream_clock_is_pipeline_clock)
+			{
+				GST_INFO_OBJECT(self, "stream clock is the pipeline clock; not enabling rate match");
+				self->spa_rate_match->flags &= ~SPA_IO_RATE_MATCH_FLAG_ACTIVE;
+			}
+			else
+			{
+				/* Make sure that the starting state is one without any actual sample rate conversion. */
+				self->spa_rate_match->rate = 1.0;
+
+				GST_INFO_OBJECT(self, "stream clock is not the pipeline clock; enabling rate match");
+				self->spa_rate_match->flags |= SPA_IO_RATE_MATCH_FLAG_ACTIVE;
+			}
 
 			break;
 		}
