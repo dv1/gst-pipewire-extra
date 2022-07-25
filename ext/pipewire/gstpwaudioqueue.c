@@ -68,6 +68,8 @@ GST_DEBUG_CATEGORY(pw_audio_queue_debug);
 /* How many frames the silence_frames_buffer contains. */
 #define SILENCE_FRAMES_BUFFER_LENGTH 256
 
+#define PTS_DELTA_HISTORY_SIZE 3
+
 
 struct _GstPwAudioQueuePrivate
 {
@@ -82,6 +84,10 @@ struct _GstPwAudioQueuePrivate
 	 * checks for these cases and behaves depending on the value of this timestamp.
 	 * Only used with contiguous data. */
 	GstClockTime oldest_queued_data_pts;
+
+	/* Small PTS delta history used for computing a short 3-number median. */
+	GstClockTimeDiff pts_delta_history[PTS_DELTA_HISTORY_SIZE];
+	gint num_pts_delta_history_entries;
 
 	/* Currently set audio format. Only valid if format_initialized is set to TRUE. */
 	GstPwAudioFormat format;
@@ -123,6 +129,7 @@ static void gst_pw_audio_queue_init(GstPwAudioQueue *self)
 	self->priv = gst_pw_audio_queue_get_instance_private(self);
 
 	self->priv->oldest_queued_data_pts = GST_CLOCK_TIME_NONE;
+	self->priv->num_pts_delta_history_entries = 0;
 
 	self->priv->format_initialized = FALSE;
 
@@ -287,6 +294,20 @@ void gst_pw_audio_queue_flush(GstPwAudioQueue *queue)
 
 	queue->current_fill_level = 0;
 	queue->priv->oldest_queued_data_pts = GST_CLOCK_TIME_NONE;
+	queue->priv->num_pts_delta_history_entries = 0;
+}
+
+
+static inline GstClockTimeDiff calculate_3_value_median(GstClockTimeDiff const *pts_delta_history)
+{
+	/* Store temporaries in variables since MIN and MAX are macros, not functions */
+	GstClockTimeDiff a = pts_delta_history[0];
+	GstClockTimeDiff b = pts_delta_history[1];
+	GstClockTimeDiff c = pts_delta_history[2];
+	GstClockTimeDiff min_ab = MIN(a, b);
+	GstClockTimeDiff max_ab = MAX(a, b);
+	GstClockTimeDiff max_ab_min_c = MIN(max_ab, c);
+	return MAX(min_ab, max_ab_min_c);
 }
 
 
@@ -649,10 +670,61 @@ GstPwAudioQueueRetrievalResult gst_pw_audio_queue_retrieve_buffer(
 			{
 				GstClockTime silence_length = 0;
 				GstClockTime duration_of_expired_queued_data = 0;
+				GstClockTimeDiff pts_delta, median_pts_delta;
 				gsize num_frames_with_silence;
 
 				/* At this point it is clear that at least *some* of the queued
-				 * data lies within the output window. */
+				 * data lies within the output window. In here, the code takes care of
+				 * calculating the delta between the PTS of the oldest queued data and the
+				 * retrieval PTS. This is useful for clock drift compensation; if the clock
+				 * of the PipeWire graph driver and the pipeline clock drift apart, then
+				 * so will the distance between these two PTS. If for example the driver's
+				 * clock is slower, then less data will be consumed per second, data stays
+				 * for longer in the queue, and the oldest queued data PTS is incremented
+				 * less often. If the driver's clock is faster then the oldest queued data
+				 * PTS is incremented faster etc. We also apply a small 3-number median
+				 * filter on the raw PTS delta to weed out occasional  outliers that could
+				 * mislead the code further below into skipping data / insert silence when
+				 * it isn't actually needed. */
+
+				pts_delta = GST_CLOCK_DIFF(queued_data_start_pts, actual_output_buffer_start_pts);
+
+				/* Apply the median filter. Special cases:
+				 *
+				 * - PTS delta history is empty, and will get its first value: Just use that
+				 *   one as the "filtered" value. This is actually not filtered at all, but
+				 *   it is useful to have a quantity right at the very beginning.
+				 *
+				 * - PTS delta history has 1 value, now gets a second one: Calculate their
+				 *   average, then return that as the filtered value.
+				 *
+				 * Once the history has 2 values already, a 3-value median can be computed.
+				 */
+				switch (queue->priv->num_pts_delta_history_entries)
+				{
+					case 0:
+						queue->priv->pts_delta_history[0] = pts_delta;
+						queue->priv->num_pts_delta_history_entries++;
+						median_pts_delta = pts_delta;
+						break;
+
+					case 1:
+						queue->priv->pts_delta_history[1] = pts_delta;
+						queue->priv->num_pts_delta_history_entries++;
+						median_pts_delta = (pts_delta + queue->priv->pts_delta_history[0]) / 2;
+						break;
+
+					case 2:
+						queue->priv->pts_delta_history[2] = pts_delta;
+						queue->priv->num_pts_delta_history_entries++;
+						median_pts_delta = calculate_3_value_median(queue->priv->pts_delta_history);
+						break;
+
+					default:
+						memmove(&(queue->priv->pts_delta_history[0]), &(queue->priv->pts_delta_history[1]), sizeof(GstClockTimeDiff) * (PTS_DELTA_HISTORY_SIZE - 1));
+						queue->priv->pts_delta_history[PTS_DELTA_HISTORY_SIZE - 1] = pts_delta;
+						median_pts_delta = calculate_3_value_median(queue->priv->pts_delta_history);
+				}
 
 				/* We need to distinguish between two cases:
 				 *
@@ -676,29 +748,29 @@ GstPwAudioQueueRetrievalResult gst_pw_audio_queue_retrieve_buffer(
 				 * to be subject to jitter). This mechanism then also prevents the
 				 * drift from getting too bad, and automatically corrects a large
 				 * initial drift.
+				 *
+				 * We use the median-filtered PTS delta, not the raw PTS delta.
+				 * The raw one occasionally can have big outliers that must be
+				 * ignored, otherwise they cause glitches. But if the _filtered_
+				 * PTS delta lies beyond the skew threshold, also reset the PTS
+				 * delta history, since otherwise, now-stale values would be used.
 				 */
-				if (actual_output_buffer_start_pts < (queued_data_start_pts - skew_threshold))
+				if (median_pts_delta < (-skew_threshold))
 				{
 					silence_length = queued_data_start_pts - actual_output_buffer_start_pts;
+					queue->priv->num_pts_delta_history_entries = 0;
 				}
-				else if (actual_output_buffer_start_pts > (queued_data_start_pts + skew_threshold))
+				else if (median_pts_delta > (+skew_threshold))
 				{
 					duration_of_expired_queued_data = actual_output_buffer_start_pts - queued_data_start_pts;
+					queue->priv->num_pts_delta_history_entries = 0;
 				}
 				else
 				{
-					/* Calculate the delta between the PTS of the oldest queued data and the
-					 * retrieval PTS. This is useful for clock drift compensation; if the clock
-					 * of the PipeWire graph driver and the pipeline clock drift apart, then
-					 * so willl the distance between these two PTS. If for example the driver's
-					 * clock is slower, then less data will be consumed per second, data stays
-					 * for longer in the queue, and the oldest queued data PTS is incremented
-					 * less often. If the driver's clock is faster then the oldest queued data
-					 * PTS is incremented faster etc.
-					 * We set this quantity only if no skewing was performed; otherwise, the
+					/* We set this quantity only if no skewing was performed; otherwise, the
 					 * delta may mistakenly get factored in twice (once by the skewing, another
 					 *time by the caller, who for example feeds the delta into a PID controller). */
-					retrieval_details->queued_data_to_retrival_pts_delta = GST_CLOCK_DIFF(queued_data_start_pts, actual_output_buffer_start_pts);
+					retrieval_details->queued_data_to_retrival_pts_delta = median_pts_delta;
 				}
 
 				/* Silence needs to be prepended if the data lies in the future but is still
@@ -865,5 +937,6 @@ queue_is_empty:
 	g_assert(queue->current_fill_level == 0);
 	retrieval_details->retrieved_buffer = NULL;
 	queue->priv->oldest_queued_data_pts = GST_CLOCK_TIME_NONE;
+	queue->priv->num_pts_delta_history_entries = 0;
 	return GST_PW_AUDIO_QUEUE_RETRIEVAL_RESULT_QUEUE_IS_EMPTY;
 }
