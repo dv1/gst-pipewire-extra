@@ -782,7 +782,7 @@ GstPwAudioQueueRetrievalResult gst_pw_audio_queue_retrieve_buffer(
 				{
 					retrieval_details->num_silence_frames_to_prepend = gst_pw_audio_format_calculate_num_frames_from_duration(&(queue->priv->format), silence_length);
 
-					GST_LOG_OBJECT(
+					GST_DEBUG_OBJECT(
 						queue,
 						"prepending %f ms (=%" G_GSIZE_FORMAT " frame(s)) of silence",
 						silence_length / ((gdouble)GST_MSECOND),
@@ -802,7 +802,7 @@ GstPwAudioQueueRetrievalResult gst_pw_audio_queue_retrieve_buffer(
 				{
 					gsize num_frames_to_flush = gst_pw_audio_format_calculate_num_frames_from_duration(&(queue->priv->format), duration_of_expired_queued_data);
 
-					GST_LOG_OBJECT(
+					GST_DEBUG_OBJECT(
 						queue,
 						"the first %f ms (=%" G_GSIZE_FORMAT " frame(s)) of data in the queue are expired; skipping it",
 						duration_of_expired_queued_data / ((gdouble)GST_MSECOND),
@@ -816,7 +816,7 @@ GstPwAudioQueueRetrievalResult gst_pw_audio_queue_retrieve_buffer(
 					{
 						GstClockTime updated_pts = queue->priv->oldest_queued_data_pts + duration_of_expired_queued_data;
 
-						GST_LOG_OBJECT(
+						GST_DEBUG_OBJECT(
 							queue,
 							"updating oldest queued data PTS: %" GST_TIME_FORMAT " -> %" GST_TIME_FORMAT,
 							GST_TIME_ARGS(queue->priv->oldest_queued_data_pts),

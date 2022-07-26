@@ -766,6 +766,7 @@ static void gst_pw_audio_sink_get_property(GObject *object, guint prop_id, GValu
 
 static GstStateChangeReturn gst_pw_audio_sink_change_state(GstElement *element, GstStateChange transition)
 {
+	GstStateChangeReturn result;
 	GstPwAudioSink *self = GST_PW_AUDIO_SINK(element);
 
 	switch (transition)
@@ -816,7 +817,16 @@ static GstStateChangeReturn gst_pw_audio_sink_change_state(GstElement *element, 
 			break;
 	}
 
-	return GST_ELEMENT_CLASS(gst_pw_audio_sink_parent_class)->change_state(element, transition);
+	result = GST_ELEMENT_CLASS(gst_pw_audio_sink_parent_class)->change_state(element, transition);
+
+	GST_DEBUG_OBJECT(
+		self,
+		"state change %s result: %s",
+		gst_state_change_get_name(transition),
+		gst_element_state_change_return_get_name(result)
+	);
+
+	return result;
 }
 
 
