@@ -221,7 +221,9 @@ struct _GstPwAudioSink
 	gint64 stream_delay_in_ns;
 	/* Quantum size in driver ticks. Set in the io_changed callback
 	 * when it is passed SPA_IO_Position information. */
-	guint64 quantum_size;
+	guint64 quantum_size_in_ticks;
+	/* Quantum size in nanoseconds. */
+	guint64 quantum_size_in_ns;
 	/* Snapshot of skew_threshold, done in gst_pw_audio_sink_start().
 	 * This is done to prevent potential race conditions if the user
 	 * changes the skew threshold property while it is being read.
@@ -555,7 +557,8 @@ static void gst_pw_audio_sink_init(GstPwAudioSink *self)
 	self->spa_rate_match = NULL;
 	self->stream_delay_in_ticks = 0;
 	self->stream_delay_in_ns = 0;
-	self->quantum_size = 0;
+	self->quantum_size_in_ticks = 0;
+	self->quantum_size_in_ns = 0;
 
 	gst_pw_audio_sink_set_provide_clock_flag(self, DEFAULT_PROVIDE_CLOCK);
 }
@@ -1471,7 +1474,8 @@ static gboolean gst_pw_audio_sink_stop(GstBaseSink *basesink)
 	self->stream_delay_in_ns = 0;
 	self->latency = 0;
 	self->notify_upstream_about_stream_delay = 0;
-	self->quantum_size = 0;
+	self->quantum_size_in_ticks = 0;
+	self->quantum_size_in_ns = 0;
 
 	self->stream_clock_is_pipeline_clock = FALSE;
 
@@ -2283,21 +2287,25 @@ static void gst_pw_audio_sink_io_changed(void *data, uint32_t id, void *area, G_
 			self->spa_position = (struct spa_io_position *)area;
 			if (self->spa_position != NULL)
 			{
-				GST_DEBUG_OBJECT(
-					self,
-					"got new SPA IO position:  offset: %" G_GINT64_FORMAT "  state: %s  num segments: %" G_GUINT32_FORMAT,
-					(gint64)(self->spa_position->offset),
-					spa_io_position_state_to_string((enum spa_io_position_state)(self->spa_position->state)),
-					(guint32)(self->spa_position->n_segments)
-				);
-				GST_DEBUG_OBJECT(
-					self,
-					"SPA IO position  clock duration (= quantum size): %" G_GUINT64_FORMAT "  rate: %" G_GUINT32_FORMAT "/%" G_GUINT32_FORMAT,
-					self->spa_position->clock.duration,
-					self->spa_position->clock.rate.num, self->spa_position->clock.rate.denom
+				self->quantum_size_in_ticks = self->spa_position->clock.duration;
+				self->quantum_size_in_ns = gst_util_uint64_scale_int(
+					self->quantum_size_in_ticks * self->spa_position->clock.rate.num,
+					GST_SECOND,
+					self->spa_position->clock.rate.denom
 				);
 
-				self->quantum_size = self->spa_position->clock.duration;
+				GST_DEBUG_OBJECT(
+					self,
+					"got new SPA IO position:  offset: %" G_GINT64_FORMAT "  state: %s  num segments: %" G_GUINT32_FORMAT "  "
+					"quantum size in ticks: %" G_GUINT64_FORMAT "  rate: %" G_GUINT32_FORMAT "/%" G_GUINT32_FORMAT " "
+					" => quantum size in ns: %" GST_TIME_FORMAT,
+					(gint64)(self->spa_position->offset),
+					spa_io_position_state_to_string((enum spa_io_position_state)(self->spa_position->state)),
+					(guint32)(self->spa_position->n_segments),
+					self->quantum_size_in_ticks,
+					self->spa_position->clock.rate.num, self->spa_position->clock.rate.denom,
+					GST_TIME_ARGS(self->quantum_size_in_ns)
+				);
 			}
 			else
 			{
@@ -2406,7 +2414,12 @@ static void gst_pw_audio_sink_contiguous_on_process_stream(void *data)
 	else
 		stream_delay_in_ns = self->stream_delay_in_ns;
 
-	latency = self->latency;
+	/* Factor the quantum size into the latency. This is because in this call, we are
+	 * producing data for the *next* tick, and the next tick's timestamp is:
+	 *
+	 * current_time + quantum_length
+	 */
+	latency = self->latency + self->quantum_size_in_ns;
 
 	UNLOCK_LATENCY_MUTEX(self);
 
