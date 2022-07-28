@@ -177,6 +177,10 @@ struct _GstPwAudioSink
 	 * Access to this field requires the audio_buffer_queue object lock to be taken
 	 * if the pw_stream is connected. */
 	gboolean synced_playback_started;
+	/* If this is TRUE, then the pw_stream actually started streaming, that is, the
+	 * on_process_stream() callback was invoked for the first time. This is used for
+	 * waiting until the stream is actually running. */
+	gboolean streaming_started;
 	/* Used for checking the buffer PTS for discontinuities. */
 	GstClockTime expected_next_running_time_pts;
 	/* Latency in nanoseconds, based on the value of stream_delay_in_ns. */
@@ -540,6 +544,7 @@ static void gst_pw_audio_sink_init(GstPwAudioSink *self)
 	self->paused = 0;
 	self->notify_upstream_about_stream_delay = 0;
 	self->synced_playback_started = FALSE;
+	self->streaming_started = FALSE;
 	self->expected_next_running_time_pts = GST_CLOCK_TIME_NONE;
 	self->latency = 0;
 	g_mutex_init(&(self->latency_mutex));
@@ -1011,30 +1016,9 @@ static gboolean gst_pw_audio_sink_set_caps(GstBaseSink *basesink, GstCaps *caps)
 	enum pw_stream_flags flags = 0;
 	uint32_t target_object_id;
 	gboolean pw_thread_loop_locked = FALSE;
-	gboolean must_reactivate_stream;
 	guint8 builder_buffer[1024];
 
 	GST_DEBUG_OBJECT(self, "got new sink caps %" GST_PTR_FORMAT, (gpointer)caps);
-
-	/* set_caps() may be entered because playback just started and these are
-	 * the caps of the initial data. Or, it may be entered because new data
-	 * came in with different caps after previous data was played. In the
-	 * former case, we don't activate right away, since that is taken care
-	 * of in the PAUSED->PLAYING state change. In the latter case, we do,
-	 * because this data with new caps comes in without any state change
-	 * happening. We _have_ to first deactivate any ongoing active stream
-	 * before we can set a new format, which is why this is relevant.
-	 * Remember here whether or not the stream was already activated before
-	 * so the code knows if reactivating is necessary. We take the PW thread
-	 * loop lock since accessing self->stream_is_active requires this. */
-	pw_thread_loop_lock(self->pipewire_core->loop);
-	must_reactivate_stream = self->stream_is_active;
-	pw_thread_loop_unlock(self->pipewire_core->loop);
-
-	if (must_reactivate_stream)
-		GST_DEBUG_OBJECT(self, "stream was already active; will immediately reactivate after stream was reconnected");
-	else
-		GST_DEBUG_OBJECT(self, "stream hasn't been activated already; will not activate right after stream was connected");
 
 	/* Wait until any remaining audio data that uses the old caps is played.
 	 * Then we can safely disconnect the stream and don't lose any audio data. */
@@ -1140,8 +1124,45 @@ static gboolean gst_pw_audio_sink_set_caps(GstBaseSink *basesink, GstCaps *caps)
 
 	gst_pw_audio_queue_set_format(self->audio_buffer_queue, &(self->pw_audio_format));
 
-	if (must_reactivate_stream)
-		gst_pw_audio_sink_activate_stream_unlocked(self, TRUE);
+	gst_pw_audio_sink_activate_stream_unlocked(self, TRUE);
+
+	/* Block until the stream is actually up and running (or if we flush).
+	 * This is necessary, otherwise the base-time is set too early and the
+	 * first N milliseconds worth of audio data will be considered expired
+	 * and thus are lost. By blocking, this is avoided. */
+	{
+		GstClockTime wait_start_timestamp, wait_end_timestamp;
+		GstClockTimeDiff elapsed_time;
+
+		LOCK_AUDIO_BUFFER_QUEUE(self);
+
+		/* Record the amount of wall-clock (!) time it takes to start the stream.
+		 * NOTE: This elapsed time is purely for diagnostics, and is not to be
+		 * factored into calculations here. This is not necessary anyway, since
+		 * the base-time is picked by the pipeline _after_ set_caps ends, so this
+		 * time will be implicitly factored in anyway. */
+		wait_start_timestamp = gst_util_get_timestamp();
+
+		while (!(self->streaming_started))
+		{
+			if (g_atomic_int_get(&(self->flushing)))
+			{
+				GST_DEBUG_OBJECT(self, "aborting wait since we are flushing");
+				break;
+			}
+
+			pw_thread_loop_unlock(self->pipewire_core->loop);
+			g_cond_wait(&(self->audio_buffer_queue_cond), GET_AUDIO_BUFFER_QUEUE_MUTEX(self));
+			pw_thread_loop_lock(self->pipewire_core->loop);
+		}
+
+		wait_end_timestamp = gst_util_get_timestamp();
+
+		UNLOCK_AUDIO_BUFFER_QUEUE(self);
+
+		elapsed_time = GST_CLOCK_DIFF(wait_start_timestamp, wait_end_timestamp);
+		GST_DEBUG_OBJECT(self, "stream has started after %f ms", ((gdouble)elapsed_time) / GST_MSECOND);
+	}
 
 finish:
 	if (pw_thread_loop_locked)
@@ -1500,6 +1521,8 @@ static gboolean gst_pw_audio_sink_stop(GstBaseSink *basesink)
 	self->notify_upstream_about_stream_delay = 0;
 	self->quantum_size_in_ticks = 0;
 	self->quantum_size_in_ns = 0;
+
+	self->streaming_started = FALSE;
 
 	self->stream_clock_is_pipeline_clock = FALSE;
 
@@ -2159,6 +2182,9 @@ static void gst_pw_audio_sink_activate_stream_unlocked(GstPwAudioSink *self, gbo
 	GST_DEBUG_OBJECT(self, "%s PipeWire stream", activate ? "activating" : "deactivating");
 
 	self->stream_is_active = activate;
+
+	if (!activate)
+		self->streaming_started = FALSE;
 }
 
 
@@ -2438,12 +2464,18 @@ static void gst_pw_audio_sink_contiguous_on_process_stream(void *data)
 	else
 		stream_delay_in_ns = self->stream_delay_in_ns;
 
-	/* Factor the quantum size into the latency. This is because in this call, we are
-	 * producing data for the *next* tick, and the next tick's timestamp is:
+	/* Factor the quantum size into the latency 2 times. This is because in this call,
+	 * we are producing data for the *next* tick, and the next tick's timestamp is:
 	 *
 	 * current_time + quantum_length
+	 *
+	 * Furthermore, the streaming_started check causes the first tick to produce a
+	 * silence quantum. This is done to compensate for the amount of time that it
+	 * takes the pw stream to actually start. If we did not do this, the first
+	 * N milliseconds worth of queued data would be expired. This means that we
+	 * must add the quantum size a second time to cover that initial "dummy tick".
 	 */
-	latency = self->latency + self->quantum_size_in_ns;
+	latency = self->latency + self->quantum_size_in_ns * 2;
 
 	UNLOCK_LATENCY_MUTEX(self);
 
@@ -2548,6 +2580,8 @@ static void gst_pw_audio_sink_contiguous_on_process_stream(void *data)
 			g_assert_not_reached();
 	}
 
+	self->streaming_started = TRUE;
+
 	if (G_UNLIKELY(gst_pw_audio_queue_get_fill_level(self->audio_buffer_queue) == 0))
 	{
 		GST_DEBUG_OBJECT(self, "audio buffer queue empty/underrun; producing silence quantum");
@@ -2575,8 +2609,10 @@ static void gst_pw_audio_sink_contiguous_on_process_stream(void *data)
 				GST_LOG_OBJECT(
 					self,
 					"current time: %" GST_TIME_FORMAT "  "
+					"num frames to produce: %" G_GUINT64_FORMAT "  "
 					"latency: %" GST_TIME_FORMAT,
 					GST_TIME_ARGS(current_time),
+					num_frames_to_produce,
 					GST_TIME_ARGS(latency)
 				);
 
