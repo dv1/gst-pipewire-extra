@@ -31,7 +31,6 @@
 /* Major TODOs:
  *
  * - Check preroll behavior
- * - Clock drift compensation (possibly by using spa_io_rate_match)
  * - Support for non-PCM formats (infrastructure for this is in place already)
  * - Trick modes
  * - Playback speed other than 1.0
@@ -58,6 +57,7 @@
 #include "gstpwaudioformat.h"
 #include "gstpwaudioqueue.h"
 #include "gstpwaudiosink.h"
+#include "pi_controller.h"
 
 
 GST_DEBUG_CATEGORY(pw_audio_sink_debug);
@@ -108,6 +108,15 @@ enum
 #define LOCK_LATENCY_MUTEX(pw_audio_sink) g_mutex_lock(&((pw_audio_sink)->latency_mutex))
 #define UNLOCK_LATENCY_MUTEX(pw_audio_sink) g_mutex_unlock(&((pw_audio_sink)->latency_mutex))
 
+/* Factors for the PI controller. Empirically picked. */
+#define PI_CONTROLLER_KI_FACTOR 0.01
+#define PI_CONTROLLER_KP_FACTOR 0.15
+
+/* Factors for converting PTS deltas into PPM quantities for the PI controller. */
+#define MAX_NUM_DRIFT_PTS_DELTAS 5
+#define MAX_DRIFT_PTS_DELTA (5 * GST_MSECOND)
+#define MAX_DRIFT_PPM 10000
+
 
 struct _GstPwAudioSink
 {
@@ -145,6 +154,14 @@ struct _GstPwAudioSink
 	 * if the pw_stream is connected. */
 	GstPwAudioQueue *audio_buffer_queue;
 	GCond audio_buffer_queue_cond;
+
+	/** PCM clock drift compensation states **/
+
+	/* PI controller for filtering the PTS delta that comes from the GstPwAudioQueue. */
+	PIController pi_controller;
+	/* Timestamp of previous tick to calculate the time_scale that gets
+	 * passed to the pi_controller_compute() function. */
+	GstClockTime previous_time;
 
 	/** Misc playback states **/
 
@@ -282,6 +299,7 @@ static gboolean gst_pw_audio_sink_get_provide_clock_flag(GstPwAudioSink *self);
 
 static void gst_pw_audio_sink_activate_stream_unlocked(GstPwAudioSink *self, gboolean activate);
 static void gst_pw_audio_sink_reset_audio_buffer_queue_unlocked(GstPwAudioSink *self);
+static void gst_pw_audio_sink_reset_drift_compensation_states(GstPwAudioSink *self);
 static void gst_pw_audio_sink_drain(GstPwAudioSink *self);
 static void gst_pw_audio_sink_disconnect_stream(GstPwAudioSink *self);
 
@@ -538,6 +556,9 @@ static void gst_pw_audio_sink_init(GstPwAudioSink *self)
 	self->audio_buffer_queue = gst_pw_audio_queue_new();
 	g_assert(self->audio_buffer_queue != NULL);
 	g_cond_init(&(self->audio_buffer_queue_cond));
+
+	pi_controller_init(&(self->pi_controller), PI_CONTROLLER_KI_FACTOR, PI_CONTROLLER_KP_FACTOR);
+	gst_pw_audio_sink_reset_drift_compensation_states(self);
 
 	self->max_queue_fill_level = 0;
 	self->flushing = 0;
@@ -2178,6 +2199,14 @@ static void gst_pw_audio_sink_activate_stream_unlocked(GstPwAudioSink *self, gbo
 	if (self->stream_is_active == activate)
 		return;
 
+	/* Reset drift compensation states if we are about to activate
+	 * the stream. We do this _only_ in the inactive -> active
+	 * case, and only _before_ activating. This prevents race
+	 * conditions where the process callback accesses these states
+	 * while we are resetting them here. */
+	if (activate)
+		gst_pw_audio_sink_reset_drift_compensation_states(self);
+
 	pw_stream_set_active(self->stream, activate);
 	GST_DEBUG_OBJECT(self, "%s PipeWire stream", activate ? "activating" : "deactivating");
 
@@ -2199,6 +2228,13 @@ static void gst_pw_audio_sink_reset_audio_buffer_queue_unlocked(GstPwAudioSink *
 	 * and there's no more old data to check for alignment with new data. */
 	self->synced_playback_started = FALSE;
 	self->expected_next_running_time_pts = GST_CLOCK_TIME_NONE;
+}
+
+
+static void gst_pw_audio_sink_reset_drift_compensation_states(GstPwAudioSink *self)
+{
+	pi_controller_reset(&(self->pi_controller));
+	self->previous_time = GST_CLOCK_TIME_NONE;
 }
 
 
@@ -2651,6 +2687,54 @@ static void gst_pw_audio_sink_contiguous_on_process_stream(void *data)
 				self->synced_playback_started = TRUE;
 
 				UNLOCK_AUDIO_BUFFER_QUEUE(self);
+
+				/* If the pipeline clock and our PW stream clock are not the same, we must compensate
+				 * for a clock drift. Calculate it and a factor for compensating this drift with the
+				 * ASRC of the pw_stream. We use the PI controller for this. */
+				if ((self->pw_audio_format.audio_type == GST_PIPEWIRE_AUDIO_TYPE_PCM) && !(self->stream_clock_is_pipeline_clock))
+				{
+					double input_ppm, filtered_ppm;
+					double rate, time_scale;
+					GstClockTimeDiff drift_pts_delta, clamped_drift_pts_delta;
+
+					/* Get the PTS delta from the queue. This delta already comes median-filtered,
+					 * so we don't bother pre-filtering it further here. However, we do clamp it
+					 * to limit the impact it can have on the PI controller. */
+					drift_pts_delta = retrieval_details.queued_data_to_retrival_pts_delta;
+					clamped_drift_pts_delta = CLAMP(drift_pts_delta, -MAX_DRIFT_PTS_DELTA, +MAX_DRIFT_PTS_DELTA);
+
+					/* Do a simple linear transform to convert the PTS delta to a PPM value. PPM
+					 * is a relative quantity, and we use MAX_DRIFT_PTS_DELTA as the reference. */
+					input_ppm = MAX_DRIFT_PPM * ((double)clamped_drift_pts_delta) / MAX_DRIFT_PTS_DELTA;
+
+					/* Calculate the time_scale to correctly factor in the elapsed time between
+					 * ticks when the PI controller calculates the filtered PPM quantity. As for
+					 * the situation in the beginning, we don't do any clock drift compensation
+					 * from the get-go anyway, so it is fine to use a time_scale of 0, which
+					 * effectively amounts to a no-op in pi_controller_compute(). */
+					time_scale = GST_CLOCK_TIME_IS_VALID(self->previous_time)
+						? (((double)GST_CLOCK_DIFF(self->previous_time, current_time)) / GST_SECOND)
+						: 0.0;
+
+					/* Perform the filtering using the PI controller. */
+					filtered_ppm = pi_controller_compute(&(self->pi_controller), input_ppm, time_scale);
+
+					/* Using the PPM, adjust the ASRC. */
+					rate = 1.0 - filtered_ppm / 1000000.0;
+					self->spa_rate_match->rate = rate;
+
+					GST_LOG_OBJECT(
+						self,
+						"drift adjustment: original / clamped PTS delta: %"
+						G_GINT64_FORMAT " / %" G_GINT64_FORMAT
+						" time scale: %f input / filtered PPM: %f / %f rate: %f",
+						drift_pts_delta, clamped_drift_pts_delta,
+						time_scale, input_ppm, filtered_ppm, rate
+					);
+
+					/* Store the current time for the next iteration so we can compute the next time_scale. */
+					self->previous_time = current_time;
+				}
 
 				/* If this point is reached the result must be one of these two possible ones.
 				 * Otherwise this indicates that at least one result type is not handled properly. */
