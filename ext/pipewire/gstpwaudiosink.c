@@ -826,6 +826,20 @@ static GstStateChangeReturn gst_pw_audio_sink_change_state(GstElement *element, 
 		gst_element_state_change_return_get_name(result)
 	);
 
+	switch (transition)
+	{
+		case GST_STATE_CHANGE_PAUSED_TO_PLAYING:
+		{
+			GstClockTime base_time = gst_element_get_base_time(GST_ELEMENT_CAST(self));
+			GstClockTime current_time = gst_clock_get_time(GST_ELEMENT_CLOCK(self));
+			GST_DEBUG_OBJECT(self, "base-time is now: %" GST_TIME_FORMAT " current time: %" GST_TIME_FORMAT, GST_TIME_ARGS(base_time), GST_TIME_ARGS(current_time));
+			break;
+		}
+
+		default:
+		break;
+	}
+
 	return result;
 }
 
