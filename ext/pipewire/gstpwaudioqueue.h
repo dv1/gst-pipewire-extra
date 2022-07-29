@@ -105,6 +105,7 @@ GstPwAudioQueueRetrievalResult gst_pw_audio_queue_retrieve_buffer(
 	GstClockTimeDiff skew_threshold,
 	GstPwAudioQueueRetrievalDetails *retrieval_details
 );
+GstClockTime gst_pw_audio_queue_get_oldest_data_pts(GstPwAudioQueue *queue);
 
 static inline GstClockTime gst_pw_audio_queue_get_fill_level(GstPwAudioQueue *queue)
 {

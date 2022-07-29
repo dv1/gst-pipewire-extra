@@ -940,3 +940,16 @@ queue_is_empty:
 	queue->priv->num_pts_delta_history_entries = 0;
 	return GST_PW_AUDIO_QUEUE_RETRIEVAL_RESULT_QUEUE_IS_EMPTY;
 }
+
+
+/**
+ * gst_pw_audio_queue_get_oldest_data_pts:
+ * @queue: a #GstPwAudioQueue
+ *
+ * Returns: The PTS of the oldest data in the queue,
+ *   or GST_CLOCK_TIME_NONE if the queue is empty.
+ */
+GstClockTime gst_pw_audio_queue_get_oldest_data_pts(GstPwAudioQueue *queue)
+{
+	return queue->priv->oldest_queued_data_pts;
+}
