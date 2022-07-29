@@ -83,6 +83,7 @@ enum
 	PROP_NODE_NAME,
 	PROP_NODE_DESCRIPTION,
 	PROP_CACHE_PROBED_CAPS,
+	PROP_SHIFT_PTS_DURING_CAPS_CHANGE,
 
 	PROP_LAST
 };
@@ -99,6 +100,7 @@ enum
 #define DEFAULT_NODE_NAME NULL
 #define DEFAULT_NODE_DESCRIPTION NULL
 #define DEFAULT_CACHE_PROBED_CAPS TRUE
+#define DEFAULT_SHIFT_PTS_DURING_CAPS_CHANGE FALSE
 
 
 #define LOCK_AUDIO_BUFFER_QUEUE(pw_audio_sink) GST_OBJECT_LOCK((pw_audio_sink)->audio_buffer_queue)
@@ -136,6 +138,7 @@ struct _GstPwAudioSink
 	gchar *node_name;
 	gchar *node_description;
 	gboolean cache_probed_caps;
+	gboolean shift_pts_during_caps_change;
 
 	/** Playback format **/
 
@@ -204,6 +207,18 @@ struct _GstPwAudioSink
 	GstClockTime latency;
 	/* The latency_mutex synchronizes access to latency and stream_delay_in_ns. */
 	GMutex latency_mutex;
+	/* This is needed if caps change after the stream started and shift_pts_during_caps_change
+	 * is set to TRUE. Reconfiguring the pw stream due to a caps change takes some time.
+	 * Since the pipeline's base-time is _not_ updated during a caps change, the first N
+	 * milliseconds of the new data (= the data that comes after the updated caps) are
+	 * considered "expired" and get dropped, where N is the amount of milliseconds it takes
+	 * to reconfigure the pw_stream. If this is not acceptable, shift_pts_during_caps_change
+	 * can be set to true. caps_pts_shift will then be used in the process callback to
+	 * shift the PTS of the queued audio data right after a caps change. That way, the
+	 * aforementioned data dropping does not happen. */
+	GstClockTime caps_pts_shift;
+	/* Set to the value of shift_pts_during_caps_change in set_caps(). */
+	gboolean caps_pts_shift_needs_update;
 
 	/** Element clock **/
 
@@ -525,6 +540,19 @@ static void gst_pw_audio_sink_class_init(GstPwAudioSinkClass *klass)
 		)
 	);
 
+	g_object_class_install_property(
+		object_class,
+		PROP_SHIFT_PTS_DURING_CAPS_CHANGE,
+		g_param_spec_boolean(
+			"shift-pts-during-caps-change",
+			"Shift PTS during caps change",
+			"When new caps come in after the stream started, compute an offset that is later "
+			"applied to the PTS of followup data to cover the pw stream reconfiguration time",
+			DEFAULT_SHIFT_PTS_DURING_CAPS_CHANGE,
+			(GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)
+		)
+	);
+
 	gst_element_class_set_static_metadata(
 		element_class,
 		"pwaudiosink",
@@ -547,6 +575,7 @@ static void gst_pw_audio_sink_init(GstPwAudioSink *self)
 	self->node_name = g_strdup(DEFAULT_NODE_NAME);
 	self->node_description = g_strdup(DEFAULT_NODE_DESCRIPTION);
 	self->cache_probed_caps = DEFAULT_CACHE_PROBED_CAPS;
+	self->shift_pts_during_caps_change = DEFAULT_SHIFT_PTS_DURING_CAPS_CHANGE;
 
 	self->sink_caps = NULL;
 	self->format_probe = NULL;
@@ -569,6 +598,8 @@ static void gst_pw_audio_sink_init(GstPwAudioSink *self)
 	self->expected_next_running_time_pts = GST_CLOCK_TIME_NONE;
 	self->latency = 0;
 	g_mutex_init(&(self->latency_mutex));
+	self->caps_pts_shift = 0;
+	self->caps_pts_shift_needs_update = FALSE;
 
 	self->stream_clock = gst_pw_stream_clock_new();
 	g_assert(self->stream_clock != NULL);
@@ -706,6 +737,12 @@ static void gst_pw_audio_sink_set_property(GObject *object, guint prop_id, GValu
 			GST_OBJECT_UNLOCK(self);
 			break;
 
+		case PROP_SHIFT_PTS_DURING_CAPS_CHANGE:
+			GST_OBJECT_LOCK(self);
+			self->shift_pts_during_caps_change = g_value_get_boolean(value);
+			GST_OBJECT_UNLOCK(self);
+			break;
+
 		default:
 			G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
 			break;
@@ -780,6 +817,12 @@ static void gst_pw_audio_sink_get_property(GObject *object, guint prop_id, GValu
 		case PROP_CACHE_PROBED_CAPS:
 			GST_OBJECT_LOCK(self);
 			g_value_set_boolean(value, self->cache_probed_caps);
+			GST_OBJECT_UNLOCK(self);
+			break;
+
+		case PROP_SHIFT_PTS_DURING_CAPS_CHANGE:
+			GST_OBJECT_LOCK(self);
+			g_value_set_boolean(value, self->shift_pts_during_caps_change);
 			GST_OBJECT_UNLOCK(self);
 			break;
 
@@ -1037,9 +1080,18 @@ static gboolean gst_pw_audio_sink_set_caps(GstBaseSink *basesink, GstCaps *caps)
 	enum pw_stream_flags flags = 0;
 	uint32_t target_object_id;
 	gboolean pw_thread_loop_locked = FALSE;
+	gboolean must_update_caps_pts_shift;
+	gboolean shift_pts_during_caps_change;
 	guint8 builder_buffer[1024];
 
 	GST_DEBUG_OBJECT(self, "got new sink caps %" GST_PTR_FORMAT, (gpointer)caps);
+
+	/* If this is not the first time we encounter caps since stream start
+	 * (or since a pipeline flush), we must shift the PTS to cover the
+	 * stream reconfiguration time. */
+	pw_thread_loop_lock(self->pipewire_core->loop);
+	must_update_caps_pts_shift = self->stream_is_active;
+	pw_thread_loop_unlock(self->pipewire_core->loop);
 
 	/* Wait until any remaining audio data that uses the old caps is played.
 	 * Then we can safely disconnect the stream and don't lose any audio data. */
@@ -1058,8 +1110,8 @@ static gboolean gst_pw_audio_sink_set_caps(GstBaseSink *basesink, GstCaps *caps)
 	/* Get rid of the old caps here. That way, should an error occur below,
 	 * we won't be left with the old, obsolete caps. */
 	gst_caps_replace(&(self->sink_caps), NULL);
-	/* Queue should be clear by now, but to be sure, call this. */
-	gst_pw_audio_queue_flush(self->audio_buffer_queue);
+	/* Clear the queue and also reset sync and alignment related states. */
+	gst_pw_audio_sink_reset_audio_buffer_queue_unlocked(self);
 
 	/* Get a PW audio format out of the caps and initialize the POD
 	 * that is then passed to pw_stream_connect() to specify the
@@ -1101,6 +1153,7 @@ static gboolean gst_pw_audio_sink_set_caps(GstBaseSink *basesink, GstCaps *caps)
 	/* Get GObject property values. */
 	GST_OBJECT_LOCK(self);
 	target_object_id = self->target_object_id;
+	shift_pts_during_caps_change = self->shift_pts_during_caps_change;
 	GST_OBJECT_UNLOCK(self);
 
 	/* Set up the new stream connection. We must do this with a locked
@@ -1139,6 +1192,9 @@ static gboolean gst_pw_audio_sink_set_caps(GstBaseSink *basesink, GstCaps *caps)
 		GST_ERROR_OBJECT(self, "cannot start stream - PW stream is in an error state: %s", error_str);
 		goto error;
 	}
+
+	/* Set this _before_ starting the stream to avoid race conditions. */
+	self->caps_pts_shift_needs_update = shift_pts_during_caps_change && must_update_caps_pts_shift;
 
 	self->stream_is_connected = TRUE;
 	self->sink_caps = gst_caps_ref(caps);
@@ -1539,6 +1595,8 @@ static gboolean gst_pw_audio_sink_stop(GstBaseSink *basesink)
 	self->stream_delay_in_ticks = 0;
 	self->stream_delay_in_ns = 0;
 	self->latency = 0;
+	self->caps_pts_shift = 0;
+	self->caps_pts_shift_needs_update = FALSE;
 	self->notify_upstream_about_stream_delay = 0;
 	self->quantum_size_in_ticks = 0;
 	self->quantum_size_in_ns = 0;
@@ -1604,7 +1662,19 @@ static gboolean gst_pw_audio_sink_event(GstBaseSink *basesink, GstEvent *event)
 
 		case GST_EVENT_FLUSH_STOP:
 		{
+			gboolean reset_base_time;
+
 			GST_DEBUG_OBJECT(self, "flushing stopped; clearing flushing flag");
+
+			/* If this flush resets the base-time, then we don't need to
+			 * set the caps PTS shift to a nonzero value, since the base-time
+			 * will also include the pw_stream startup time. */
+			gst_event_parse_flush_stop(event, &reset_base_time);
+			if (reset_base_time)
+			{
+				self->caps_pts_shift = 0;
+				self->caps_pts_shift_needs_update = FALSE;
+			}
 
 			g_atomic_int_set(&(self->flushing), 0);
 
@@ -2652,12 +2722,24 @@ static void gst_pw_audio_sink_contiguous_on_process_stream(void *data)
 					GST_TIME_ARGS(latency)
 				);
 
+				/* If a caps PTS shift is requested, compute a PTS shift such that
+				 * the queued data is shifted exactly to align with the current time.
+				 * This prevents data from expiring. */
+				if (G_UNLIKELY(self->caps_pts_shift_needs_update))
+				{
+					GstClockTime oldest_queued_data_pts = gst_pw_audio_queue_get_oldest_data_pts(self->audio_buffer_queue);
+					/* We factor out the latency here since we apply it below. */
+					self->caps_pts_shift = (current_time > (oldest_queued_data_pts + latency)) ? (current_time - (oldest_queued_data_pts + latency)) : 0;
+					self->caps_pts_shift_needs_update = FALSE;
+					GST_DEBUG_OBJECT(self, "updated caps PTS shift to %" GST_TIME_FORMAT, GST_TIME_ARGS(self->caps_pts_shift));
+				}
+
 				retrieval_result = gst_pw_audio_queue_retrieve_buffer(
 					self->audio_buffer_queue,
 					num_frames_to_produce,
 					num_frames_to_produce,
 					current_time,
-					latency,
+					latency + self->caps_pts_shift,
 					effective_skew_threshold,
 					&retrieval_details
 				);
