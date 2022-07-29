@@ -2241,6 +2241,7 @@ cannot_convert:
 
 static void gst_pw_audio_sink_set_provide_clock_flag(GstPwAudioSink *self, gboolean flag)
 {
+	GST_DEBUG_OBJECT(self, "setting provide-clock to %d", flag);
 	GST_OBJECT_LOCK(self);
 	if (flag)
 		GST_OBJECT_FLAG_SET(self, GST_ELEMENT_FLAG_PROVIDE_CLOCK);
