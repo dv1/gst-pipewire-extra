@@ -260,6 +260,13 @@ struct _GstPwAudioSink
 	guint64 quantum_size_in_ticks;
 	/* Quantum size in nanoseconds. */
 	guint64 quantum_size_in_ns;
+	/* The value of the pw_time.ticks result of the last pw_stream_get_time_n()
+	 * call in the process callback. The difference between this and the current
+	 * pw_time.ticks result must be <= quantum_size_in_ticks. Otherwise, a
+	 * discontinuity happened (ALSA buffer underrun for example). This allows us
+	 * to detect these discontinuities and resynchronize playback when they happen. */
+	guint64 last_pw_time_ticks;
+	gboolean last_pw_time_ticks_set;
 	/* Snapshot of skew_threshold, done in gst_pw_audio_sink_start().
 	 * This is done to prevent potential race conditions if the user
 	 * changes the skew threshold property while it is being read.
@@ -616,6 +623,8 @@ static void gst_pw_audio_sink_init(GstPwAudioSink *self)
 	self->stream_delay_in_ns = 0;
 	self->quantum_size_in_ticks = 0;
 	self->quantum_size_in_ns = 0;
+	self->last_pw_time_ticks = 0;
+	self->last_pw_time_ticks_set = FALSE;
 
 	gst_pw_audio_sink_set_provide_clock_flag(self, DEFAULT_PROVIDE_CLOCK);
 }
@@ -1600,6 +1609,8 @@ static gboolean gst_pw_audio_sink_stop(GstBaseSink *basesink)
 	self->notify_upstream_about_stream_delay = 0;
 	self->quantum_size_in_ticks = 0;
 	self->quantum_size_in_ns = 0;
+	self->last_pw_time_ticks = 0;
+	self->last_pw_time_ticks_set = FALSE;
 
 	self->streaming_started = FALSE;
 
@@ -2274,9 +2285,16 @@ static void gst_pw_audio_sink_activate_stream_unlocked(GstPwAudioSink *self, gbo
 	 * the stream. We do this _only_ in the inactive -> active
 	 * case, and only _before_ activating. This prevents race
 	 * conditions where the process callback accesses these states
-	 * while we are resetting them here. */
+	 * while we are resetting them here. Also reset last_pw_time_ticks,
+	 * since we use that for detecting discontinuities within the
+	 * flow of a pw_stream itself. Since we are just starting the
+	 * stream, we have no "last" pw_time ticks recorded yet. */
 	if (activate)
+	{
 		gst_pw_audio_sink_reset_drift_compensation_states(self);
+		self->last_pw_time_ticks = 0;
+		self->last_pw_time_ticks_set = FALSE;
+	}
 
 	pw_stream_set_active(self->stream, activate);
 	GST_DEBUG_OBJECT(self, "%s PipeWire stream", activate ? "activating" : "deactivating");
@@ -2539,6 +2557,28 @@ static void gst_pw_audio_sink_contiguous_on_process_stream(void *data)
 #else
 	pw_stream_get_time(self->stream, &stream_time);
 #endif
+
+	if (self->last_pw_time_ticks_set)
+	{
+		uint64_t tick_delta = stream_time.ticks - self->last_pw_time_ticks;
+
+		if (G_UNLIKELY(tick_delta > self->quantum_size_in_ticks))
+		{
+			GST_INFO_OBJECT(self, "tick delta is %" G_GUINT64_FORMAT ", which is greater than expected %" G_GUINT64_FORMAT "; discontinuity in pw stream detected; resynchronizing", (guint64)tick_delta, (guint64)(self->quantum_size_in_ticks));
+			self->synced_playback_started = FALSE;
+		}
+		else if (G_UNLIKELY(tick_delta < self->quantum_size_in_ticks))
+		{
+			/* TODO: It is currently unclear what this case means, but it does not seem that we have to resynchronize then. */
+			GST_INFO_OBJECT(self, "tick delta is %" G_GUINT64_FORMAT ", which is lesser than expected %" G_GUINT64_FORMAT, (guint64)tick_delta, (guint64)(self->quantum_size_in_ticks));
+		}
+
+		/* If tick_delta == self->quantum_size_in_ticks, then no discontinuity happens, everything is OK. */
+	}
+	else
+		self->last_pw_time_ticks_set = TRUE;
+
+	self->last_pw_time_ticks = stream_time.ticks;
 
 	/* We set the stream_delay_in_ns value here and access the latency value,
 	 * so the latency mutex must be locked. (stream_delay_in_ticks is only
