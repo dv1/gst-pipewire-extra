@@ -757,12 +757,12 @@ GstPwAudioQueueRetrievalResult gst_pw_audio_queue_retrieve_buffer(
 				 */
 				if (median_pts_delta < (-skew_threshold))
 				{
-					silence_length = queued_data_start_pts - actual_output_buffer_start_pts;
+					silence_length = -median_pts_delta;
 					queue->priv->num_pts_delta_history_entries = 0;
 				}
 				else if (median_pts_delta > (+skew_threshold))
 				{
-					duration_of_expired_queued_data = actual_output_buffer_start_pts - queued_data_start_pts;
+					duration_of_expired_queued_data = median_pts_delta;
 					queue->priv->num_pts_delta_history_entries = 0;
 				}
 				else
@@ -856,6 +856,7 @@ GstPwAudioQueueRetrievalResult gst_pw_audio_queue_retrieve_buffer(
 				);
 
 				retrieved_buffer = gst_adapter_take_buffer(queue->priv->contiguous_audio_buffer_queue, actual_num_output_frames * stride);
+				g_assert(retrieved_buffer != NULL);
 			}
 		}
 		else
@@ -866,6 +867,7 @@ GstPwAudioQueueRetrievalResult gst_pw_audio_queue_retrieve_buffer(
 			 * output is already synced, or because synced output is turned off.
 			 * Behave like a simple queue in these cases. */
 			retrieved_buffer = gst_adapter_take_buffer(queue->priv->contiguous_audio_buffer_queue, actual_num_output_frames * stride);
+			g_assert(retrieved_buffer != NULL);
 			retrieval_details->num_silence_frames_to_prepend = 0;
 			retrieval_details->num_silence_frames_to_append = 0;
 
