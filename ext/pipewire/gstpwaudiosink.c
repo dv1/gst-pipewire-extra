@@ -2727,6 +2727,14 @@ static void gst_pw_audio_sink_contiguous_on_process_stream(void *data)
 			g_assert_not_reached();
 	}
 
+	/* With very high rates, the number of frames requested by the rate match may
+	 * exceed the number of frames that fit in the chunk. To avoid buffer overflow
+	 * and prevent assertions below from failing, apply a limit here. */
+	{
+		guint64 max_num_frames = inner_spa_data->maxsize / stride;
+		num_frames_to_produce = MIN(max_num_frames, num_frames_to_produce);
+	}
+
 	self->streaming_started = TRUE;
 
 	if (G_UNLIKELY(gst_pw_audio_queue_get_fill_level(self->audio_buffer_queue) == 0))
