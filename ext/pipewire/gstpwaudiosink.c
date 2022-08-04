@@ -1828,9 +1828,25 @@ static GstFlowReturn gst_pw_audio_sink_render_contiguous(GstPwAudioSink *self, G
 		);
 	}
 
-	if (G_UNLIKELY(GST_BUFFER_FLAG_IS_SET(original_incoming_buffer, GST_BUFFER_FLAG_DISCONT) || GST_BUFFER_FLAG_IS_SET(original_incoming_buffer, GST_BUFFER_FLAG_RESYNC)))
+	if (G_UNLIKELY(GST_BUFFER_FLAG_IS_SET(original_incoming_buffer, GST_BUFFER_FLAG_DISCONT)))
 	{
-		GST_DEBUG_OBJECT(self, "discont and/or resync flag set; forcing discontinuity handling");
+		GST_DEBUG_OBJECT(self, "discont flag set - resetting alignment check");
+		/* Forget about the last expected_next_running_time_pts, since between it and
+		 * the current running_time_pts value is an expected discontinuity. That's what
+		 * the DISCONT buffer flag is for - to announce *expected* discontinuities.
+		 * It doesn't mean "handle a discontinuity now", quite the opposite, it essentially
+		 * means "ignore this discontinuity". */
+		self->expected_next_running_time_pts = GST_CLOCK_TIME_NONE;
+	}
+
+	if (G_UNLIKELY(GST_BUFFER_FLAG_IS_SET(original_incoming_buffer, GST_BUFFER_FLAG_RESYNC)))
+	{
+		GST_DEBUG_OBJECT(self, "resync flag set; forcing discontinuity handling");
+		/* THe resync flag means that we must resynchronize _now_ against the current timestamp.
+		 * Such a resynchronization alreadyy occurs when a big enough discontinuity (one that
+		 * is not marked with the DISCONT flag) is observed. We therefore simply force that
+		 * same mechanism to kick in now. This is how the resync flag induced resynchronization
+		 * is implemented here. */
 		force_discontinuity_handling = TRUE;
 	}
 
