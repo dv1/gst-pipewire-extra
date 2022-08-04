@@ -1984,8 +1984,8 @@ static GstFlowReturn gst_pw_audio_sink_render_contiguous(GstPwAudioSink *self, G
 						clipped_pts_begin += (-discontinuity);
 						GST_DEBUG_OBJECT(
 							self,
-							"discontinuity detected (%" GST_TIME_FORMAT "); need to clip this (positive) amount of nanoseconds from the beginning of the gstbuffer",
-							GST_TIME_ARGS(discontinuity)
+							"discontinuity detected (-%" GST_TIME_FORMAT "); need to clip this (positive) amount of nanoseconds from the beginning of the gstbuffer",
+							GST_TIME_ARGS(-discontinuity)
 						);
 					}
 				}
