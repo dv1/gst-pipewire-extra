@@ -115,7 +115,6 @@ enum
 #define PI_CONTROLLER_KP_FACTOR 0.15
 
 /* Factors for converting PTS deltas into PPM quantities for the PI controller. */
-#define MAX_NUM_DRIFT_PTS_DELTAS 5
 #define MAX_DRIFT_PTS_DELTA (5 * GST_MSECOND)
 #define MAX_DRIFT_PPM 10000
 
