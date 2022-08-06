@@ -218,6 +218,9 @@ struct _GstPwAudioSink
 	GstClockTime caps_pts_shift;
 	/* Set to the value of shift_pts_during_caps_change in set_caps(). */
 	gboolean caps_pts_shift_needs_update;
+	/* Set to true in the on_stream_drained() callback. Used for waiting until the
+	 * pw_stream itself is drained. (This is not about draing the audio queue.) */
+	gboolean stream_drained;
 
 	/** Element clock **/
 
@@ -321,7 +324,8 @@ static gboolean gst_pw_audio_sink_get_provide_clock_flag(GstPwAudioSink *self);
 static void gst_pw_audio_sink_activate_stream_unlocked(GstPwAudioSink *self, gboolean activate);
 static void gst_pw_audio_sink_reset_audio_buffer_queue_unlocked(GstPwAudioSink *self);
 static void gst_pw_audio_sink_reset_drift_compensation_states(GstPwAudioSink *self);
-static void gst_pw_audio_sink_drain(GstPwAudioSink *self);
+static void gst_pw_audio_sink_drain_stream_unlocked(GstPwAudioSink *self);
+static void gst_pw_audio_sink_drain_stream_and_queue(GstPwAudioSink *self);
 static void gst_pw_audio_sink_disconnect_stream(GstPwAudioSink *self);
 
 
@@ -329,6 +333,7 @@ static void gst_pw_audio_sink_disconnect_stream(GstPwAudioSink *self);
 static void gst_pw_audio_sink_pw_state_changed(void *data, enum pw_stream_state old_state, enum pw_stream_state new_state, const char *error);
 static void gst_pw_audio_sink_param_changed(void *data, uint32_t id, const struct spa_pod *param);
 static void gst_pw_audio_sink_io_changed(void *data, uint32_t id, void *area, uint32_t size);
+static void gst_pw_audio_sink_on_stream_drained(void *data);
 
 
 /* pw_stream callbacks for contiguous data. */
@@ -341,6 +346,7 @@ static const struct pw_stream_events contiguous_stream_events =
 	.state_changed = gst_pw_audio_sink_pw_state_changed,
 	.param_changed = gst_pw_audio_sink_param_changed,
 	.io_changed = gst_pw_audio_sink_io_changed,
+	.drained = gst_pw_audio_sink_on_stream_drained,
 	.process = gst_pw_audio_sink_contiguous_on_process_stream,
 };
 
@@ -355,6 +361,7 @@ static const struct pw_stream_events packetized_stream_events =
 	.state_changed = gst_pw_audio_sink_pw_state_changed,
 	.param_changed = gst_pw_audio_sink_param_changed,
 	.io_changed = gst_pw_audio_sink_io_changed,
+	.drained = gst_pw_audio_sink_on_stream_drained,
 	.process = gst_pw_audio_sink_packetized_on_process_stream,
 };
 
@@ -606,6 +613,7 @@ static void gst_pw_audio_sink_init(GstPwAudioSink *self)
 	g_mutex_init(&(self->latency_mutex));
 	self->caps_pts_shift = 0;
 	self->caps_pts_shift_needs_update = FALSE;
+	self->stream_drained = FALSE;
 
 	self->stream_clock = gst_pw_stream_clock_new();
 	g_assert(self->stream_clock != NULL);
@@ -858,6 +866,7 @@ static GstStateChangeReturn gst_pw_audio_sink_change_state(GstElement *element, 
 			GST_DEBUG_OBJECT(self, "setting paused flag and deactivating stream (if not already inactive) before PLAYING->PAUSED state change");
 
 			pw_thread_loop_lock(self->pipewire_core->loop);
+			gst_pw_audio_sink_drain_stream_unlocked(self);
 			gst_pw_audio_sink_activate_stream_unlocked(self, FALSE);
 			pw_thread_loop_unlock(self->pipewire_core->loop);
 
@@ -1103,7 +1112,7 @@ static gboolean gst_pw_audio_sink_set_caps(GstBaseSink *basesink, GstCaps *caps)
 
 	/* Wait until any remaining audio data that uses the old caps is played.
 	 * Then we can safely disconnect the stream and don't lose any audio data. */
-	gst_pw_audio_sink_drain(self);
+	gst_pw_audio_sink_drain_stream_and_queue(self);
 	gst_pw_audio_sink_disconnect_stream(self);
 
 	/* After disconnecting we remove the listener if it was previously added.
@@ -1758,7 +1767,7 @@ static GstFlowReturn gst_pw_audio_sink_wait_event(GstBaseSink *basesink, GstEven
 
 			GST_DEBUG_OBJECT(self, "EOS received; draining queue and deactivating stream");
 
-			gst_pw_audio_sink_drain(self);
+			gst_pw_audio_sink_drain_stream_and_queue(self);
 
 			pw_thread_loop_lock(self->pipewire_core->loop);
 			gst_pw_audio_sink_activate_stream_unlocked(self, FALSE);
@@ -2317,7 +2326,10 @@ static void gst_pw_audio_sink_activate_stream_unlocked(GstPwAudioSink *self, gbo
 	self->stream_is_active = activate;
 
 	if (!activate)
+	{
 		self->streaming_started = FALSE;
+		self->stream_drained = FALSE;
+	}
 }
 
 
@@ -2342,7 +2354,28 @@ static void gst_pw_audio_sink_reset_drift_compensation_states(GstPwAudioSink *se
 }
 
 
-static void gst_pw_audio_sink_drain(GstPwAudioSink *self)
+static void gst_pw_audio_sink_drain_stream_unlocked(GstPwAudioSink *self)
+{
+	/* This must be called with the pw_thread_loop_lock taken. */
+
+	/* This function is about drains the pw_stream itself, _not_ the
+	 * audio_buffer_queue. gst_pw_audio_sink_drain_stream_and_queue()
+	 * does that (and also drains the pw_stream by calling this function). */
+
+	/* pw_stream_flush with drain = TRUE will block permanently if the
+	 * stream is not active, so the stream_is_active check is essential.
+	 * Also check stream_drained to avoid redundant calls. */
+	if (!self->stream_is_active || self->stream_drained)
+		return;
+
+	GST_DEBUG_OBJECT(self, "pw stream drain initiated");
+	pw_stream_flush(self->stream, TRUE);
+	while (!self->stream_drained)
+		pw_thread_loop_wait(self->pipewire_core->loop);
+}
+
+
+static void gst_pw_audio_sink_drain_stream_and_queue(GstPwAudioSink *self)
 {
 	LOCK_AUDIO_BUFFER_QUEUE(self);
 
@@ -2371,6 +2404,13 @@ static void gst_pw_audio_sink_drain(GstPwAudioSink *self)
 	}
 
 	UNLOCK_AUDIO_BUFFER_QUEUE(self);
+
+	pw_thread_loop_lock(self->pipewire_core->loop);
+	gst_pw_audio_sink_drain_stream_unlocked(self);
+	pw_thread_loop_unlock(self->pipewire_core->loop);
+
+	/* NOTE: Stream is drained at this point and must be reactivated
+	 * by calling gst_pw_audio_sink_activate_stream_unlocked(). */
 }
 
 
@@ -2540,6 +2580,15 @@ static void gst_pw_audio_sink_io_changed(void *data, uint32_t id, void *area, G_
 		default:
 			break;
 	}
+}
+
+
+static void gst_pw_audio_sink_on_stream_drained(void *data)
+{
+	GstPwAudioSink *self = GST_PW_AUDIO_SINK_CAST(data);
+	GST_DEBUG_OBJECT(self, "pw stream fully drained");
+	self->stream_drained = TRUE;
+	pw_thread_loop_signal(self->pipewire_core->loop, FALSE);
 }
 
 
