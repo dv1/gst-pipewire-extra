@@ -1668,6 +1668,7 @@ static gboolean gst_pw_audio_sink_event(GstBaseSink *basesink, GstEvent *event)
 
 			/* Deactivate the stream since we won't be producing data during flush. */
 			pw_thread_loop_lock(self->pipewire_core->loop);
+			pw_stream_flush(self->stream, FALSE);
 			gst_pw_audio_sink_activate_stream_unlocked(self, FALSE);
 			pw_thread_loop_unlock(self->pipewire_core->loop);
 
