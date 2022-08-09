@@ -60,12 +60,10 @@ struct _GstPipewireCore
 	struct pw_thread_loop *loop;
 	struct pw_context *context;
 	struct pw_core *core;
-	struct pw_stream *stream;
 	struct spa_hook core_listener;
 	int core_done_seq_number;
 	int last_error;
 	int pending_seq_number;
-	gboolean stream_connected;
 };
 
 

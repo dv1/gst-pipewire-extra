@@ -73,11 +73,9 @@ static void gst_pipewire_core_init(GstPipewireCore *self)
 	self->loop = NULL;
 	self->context = NULL;
 	self->core = NULL;
-	self->stream = NULL;
 	self->core_done_seq_number = -1;
 	self->last_error = 0;
 	self->pending_seq_number = 0;
-	self->stream_connected = FALSE;
 }
 
 
