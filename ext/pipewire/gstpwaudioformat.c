@@ -53,10 +53,11 @@
  * For example, a PCM data buffer with 40ms of data and another buffer with 20ms
  * of data can be combined to one buffer with 60ms of data, or their contents can
  * be redistributed into two 30ms PCM data buffers etc. Data of such an audio type
- * is called "contiguous".
+ * is called "raw".
  * Other audio types aren't like that. For example, MPEG frames cannot be arbitarily
  * subdivided/re-partitioned. With such types, it is generally assumed 1 buffer is one
- * logical, indivisible packet. Data of such an audio type is called "packetized".
+ * logical, indivisible frame that contains audio data in some representation that
+ * cannot be considered "raw". Data of such an audio type is called "encoded".
  *
  * It is possible to probe a PipeWire graph for whether it can handle a certain
  * audio type. The #GstPwAudioFormatProbe takes care of this. It works by creating
@@ -104,7 +105,7 @@ typedef struct
 	 * these use gst_pw_audio_format_get_template_caps() instead. */
 	gchar const *template_caps_string;
 
-	gboolean is_contiguous;
+	gboolean is_raw;
 }
 GstPipewireAudioTypeDetails;
 
@@ -120,7 +121,7 @@ static GstPipewireAudioTypeDetails const audio_type_details[GST_NUM_PIPEWIRE_AUD
 		.template_caps_string = \
 			GST_AUDIO_CAPS_MAKE(GST_AUDIO_FORMATS_ALL) \
 			", layout = (string) { interleaved }",
-		.is_contiguous = TRUE
+		.is_raw = TRUE
 	},
 
 	/* DSD */
@@ -131,10 +132,10 @@ static GstPipewireAudioTypeDetails const audio_type_details[GST_NUM_PIPEWIRE_AUD
 			"format = (string) { DSD_U8, DSD_U32BE, DSD_U16BE, DSD_U32LE, DSD_U16LE }, "
 			"rate = (int) [ 1, MAX ], " \
 			"channels = (int) [ 1, MAX ]",
-		/* DSD data can be subdivided, and contiguous buffers can
+		/* DSD data can be subdivided, and the ring buffer can
 		 * be used with such data, so mark this as true. However,
 		 * DSD cannot be (easily) processed, unlike PCM. */
-		.is_contiguous = TRUE
+		.is_raw = TRUE
 	},
 
 	/* MPEG */
@@ -145,7 +146,7 @@ static GstPipewireAudioTypeDetails const audio_type_details[GST_NUM_PIPEWIRE_AUD
 			"parsed = (boolean) true, " \
 			"mpegversion = (int) 1, " \
 			"mpegaudioversion = (int) [ 1, 3 ]",
-		.is_contiguous = FALSE
+		.is_raw = FALSE
 	},
 
 	/* AC3 */
@@ -157,7 +158,7 @@ static GstPipewireAudioTypeDetails const audio_type_details[GST_NUM_PIPEWIRE_AUD
 			"alignment = (string) frame, " \
 			"rate = (int) [ 1, MAX ], " \
 			"channels = (int) [ 1, MAX ]",
-		.is_contiguous = FALSE
+		.is_raw = FALSE
 	},
 
 	/* EAC3 */
@@ -169,35 +170,35 @@ static GstPipewireAudioTypeDetails const audio_type_details[GST_NUM_PIPEWIRE_AUD
 			"alignment = (string) frame, " \
 			"rate = (int) [ 1, MAX ], " \
 			"channels = (int) [ 1, MAX ]",
-		.is_contiguous = FALSE
+		.is_raw = FALSE
 	},
 
 	/* TrueHD */
 	{
 		.name = "TrueHD",
 		.template_caps_string = "audio/x-true-hd",
-		.is_contiguous = FALSE
+		.is_raw = FALSE
 	},
 
 	/* DTS */
 	{
 		.name = "DTS",
 		.template_caps_string = "audio/x-dts",
-		.is_contiguous = FALSE
+		.is_raw = FALSE
 	},
 
 	/* DTS-HD */
 	{
 		.name = "DTS-HD",
 		.template_caps_string = "audio/x-dts",
-		.is_contiguous = FALSE
+		.is_raw = FALSE
 	},
 
 	/* MHAS */
 	{
 		.name = "MPEG-H audio stream",
 		.template_caps_string = "audio/x-mhas",
-		.is_contiguous = FALSE
+		.is_raw = FALSE
 	}
 };
 
@@ -528,15 +529,15 @@ GstCaps* gst_pw_audio_format_fixate_caps(GstCaps *caps)
 
 
 /**
- * gst_pw_audio_format_data_is_contiguous:
+ * gst_pw_audio_format_data_is_raw:
  * @audio_type Audio type to check.
  *
- * Returns: TRUE if data of the given type is contiguous.
+ * Returns: TRUE if data of the given type is raw.
  */
-gboolean gst_pw_audio_format_data_is_contiguous(GstPipewireAudioType audio_type)
+gboolean gst_pw_audio_format_data_is_raw(GstPipewireAudioType audio_type)
 {
 	g_assert(((gint)audio_type) < GST_NUM_PIPEWIRE_AUDIO_TYPES);
-	return audio_type_details[(gint)audio_type].is_contiguous;
+	return audio_type_details[(gint)audio_type].is_raw;
 }
 
 

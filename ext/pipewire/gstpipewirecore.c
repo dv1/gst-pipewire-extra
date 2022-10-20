@@ -48,6 +48,15 @@ static void gst_pipewire_core_sync_pw_core(GstPipewireCore *self);
 static void gst_pipewire_core_on_core_done(void *object, uint32_t id, int sequence_number);
 static void gst_pipewire_core_on_core_error(void *object, uint32_t id, int sequence_number, int res, const char *message);
 
+static void gst_pipewire_core_shutdown(GstPipewireCore *self);
+
+
+#define LOCK_CORE_LIST() g_mutex_lock(&core_list_mutex)
+#define UNLOCK_CORE_LIST() g_mutex_unlock(&core_list_mutex)
+
+static GMutex core_list_mutex;
+static GList *core_list = NULL;
+
 
 static const struct pw_core_events core_events =
 {
@@ -81,8 +90,8 @@ static void gst_pipewire_core_init(GstPipewireCore *self)
 
 static void gst_pipewire_core_dispose(GObject *object)
 {
-	// GstPipewireCore *self = GST_PIPEWIRE_CORE(object);
-
+	GstPipewireCore *self = GST_PIPEWIRE_CORE(object);
+	gst_pipewire_core_shutdown(self);
 	G_OBJECT_CLASS(gst_pipewire_core_parent_class)->dispose(object);
 }
 
@@ -168,22 +177,34 @@ static void gst_pipewire_core_on_core_error(void *object, uint32_t id, int seque
 }
 
 
-GstPipewireCore* gst_pipewire_core_new(void)
+GstPipewireCore* gst_pipewire_core_get(int fd)
 {
-	GstPipewireCore *core = GST_PIPEWIRE_CORE_CAST(g_object_new(gst_pipewire_core_get_type(), NULL));
+	GstPipewireCore *pipewire_core = NULL;
+	GList *list_elem;
+
+	LOCK_CORE_LIST();
+
+	for (list_elem = core_list; list_elem != NULL; list_elem = list_elem->next)
+	{
+		GstPipewireCore *candidate_core = GST_PIPEWIRE_CORE_CAST(list_elem->data);
+		if (candidate_core->requested_fd == fd)
+		{
+			pipewire_core = candidate_core;
+			gst_object_ref(GST_OBJECT(pipewire_core));
+			break;
+		}
+	}
+
+	if (pipewire_core != NULL)
+		goto finish;
+
+	pipewire_core = GST_PIPEWIRE_CORE_CAST(g_object_new(gst_pipewire_core_get_type(), NULL));
+	g_assert(pipewire_core != NULL);
 
 	/* Clear the floating flag. */
-	gst_object_ref_sink(GST_OBJECT(core));
+	gst_object_ref_sink(GST_OBJECT(pipewire_core));
 
-	return core;
-}
-
-
-gboolean gst_pipewire_core_start(GstPipewireCore *pipewire_core, int socket_fd)
-{
-	g_assert(pipewire_core != NULL);
-	g_assert(pipewire_core->loop == NULL);
-
+	pipewire_core->requested_fd = fd;
 	pipewire_core->core_done_seq_number = -1;
 	pipewire_core->last_error = 0;
 	pipewire_core->pending_seq_number = 0;
@@ -210,10 +231,10 @@ gboolean gst_pipewire_core_start(GstPipewireCore *pipewire_core, int socket_fd)
 
 	pw_thread_loop_lock(pipewire_core->loop);
 
-	if (socket_fd < 0)
+	if (fd < 0)
 		pipewire_core->core = pw_context_connect(pipewire_core->context, NULL, 0);
 	else
-		pipewire_core->core = pw_context_connect_fd(pipewire_core->context, fcntl(socket_fd, F_DUPFD_CLOEXEC, 3), NULL, 0);
+		pipewire_core->core = pw_context_connect_fd(pipewire_core->context, fcntl(fd, F_DUPFD_CLOEXEC, 3), NULL, 0);
 
 	if (pipewire_core->core != NULL)
 	{
@@ -236,39 +257,65 @@ gboolean gst_pipewire_core_start(GstPipewireCore *pipewire_core, int socket_fd)
 		goto error;
 	}
 
-	return TRUE;
+	GST_DEBUG("adding core %" GST_PTR_FORMAT " to list", (gpointer)pipewire_core);
+	core_list = g_list_prepend(core_list, pipewire_core);
+
+finish:
+	UNLOCK_CORE_LIST();
+	return pipewire_core;
 
 error:
-	gst_pipewire_core_stop(pipewire_core);
-	return FALSE;
+	if (pipewire_core != NULL)
+	{
+		gst_object_unref(pipewire_core);
+		pipewire_core = NULL;
+	}
+
+	goto finish;
 }
 
 
-void gst_pipewire_core_stop(GstPipewireCore *pipewire_core)
+void gst_pipewire_core_release(GstPipewireCore *core)
 {
-	if (pipewire_core->loop == NULL)
+	LOCK_CORE_LIST();
+
+	if (GST_OBJECT_REFCOUNT_VALUE(core) == 1)
+	{
+		GST_DEBUG("removing core %" GST_PTR_FORMAT " from list", (gpointer)core);
+		core_list = g_list_remove(core_list, core);
+	}
+
+	gst_object_unref(GST_OBJECT(core));
+
+	UNLOCK_CORE_LIST();
+}
+
+
+static void gst_pipewire_core_shutdown(GstPipewireCore *self)
+{
+	if (self->loop == NULL)
 		return;
 
-	if (pipewire_core->core != NULL)
+	if (self->core != NULL)
 	{
-		pw_thread_loop_lock(pipewire_core->loop);
+		pw_thread_loop_lock(self->loop);
 
-		gst_pipewire_core_sync_pw_core(pipewire_core);
-		pw_core_disconnect(pipewire_core->core);
+		gst_pipewire_core_sync_pw_core(self);
+		pw_core_disconnect(self->core);
 
-		pipewire_core->core = NULL;
+		self->core = NULL;
 
-		pw_thread_loop_unlock(pipewire_core->loop);
+		pw_thread_loop_unlock(self->loop);
 	}
 
-	if (pipewire_core->context != NULL)
+	if (self->context != NULL)
 	{
-		pw_context_destroy(pipewire_core->context);
-		pipewire_core->context = NULL;
+		pw_context_destroy(self->context);
+		self->context = NULL;
 	}
 
-	pw_thread_loop_stop(pipewire_core->loop);
-	pw_thread_loop_destroy(pipewire_core->loop);
+	pw_thread_loop_stop(self->loop);
+	pw_thread_loop_destroy(self->loop);
 
-	pipewire_core->loop = NULL;
+	self->loop = NULL;
 }

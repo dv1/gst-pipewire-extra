@@ -31,6 +31,7 @@
 
 #pragma GCC diagnostic pop
 
+#include <gst/gst.h>
 #include "gstpwaudiosink.h"
 
 

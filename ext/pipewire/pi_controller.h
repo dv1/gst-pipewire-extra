@@ -1,5 +1,5 @@
-#ifndef __PI_CONTROLLER_H__
-#define __PI_CONTROLLER_H__
+#ifndef __GST_PIPEWIRE_PI_CONTROLLER_H__
+#define __GST_PIPEWIRE_PI_CONTROLLER_H__
 
 
 /* Implementation of a PI controller (= PID controller without differential component).
@@ -50,4 +50,4 @@ static inline double pi_controller_compute(PIController *pi_controller, double i
 }
 
 
-#endif /* __PI_CONTROLLER_H__ */
+#endif /* __GST_PIPEWIRE_PI_CONTROLLER_H__ */

@@ -80,7 +80,7 @@ gchar const * gst_pipewire_dsd_format_to_string(GstPipewireDsdFormat format);
 guint gst_pipewire_dsd_format_get_width(GstPipewireDsdFormat format);
 
 /**
- * @gst_pipewire_dsd_format_is_le:
+ * gst_pipewire_dsd_format_is_le:
  * @format The format.
  *
  * Useful for determining whether a format is a little-endian.
@@ -132,7 +132,7 @@ GstCaps* gst_pw_audio_format_get_template_caps_for_type(GstPipewireAudioType aud
 
 GstCaps* gst_pw_audio_format_fixate_caps(GstCaps *caps);
 
-gboolean gst_pw_audio_format_data_is_contiguous(GstPipewireAudioType audio_type);
+gboolean gst_pw_audio_format_data_is_raw(GstPipewireAudioType audio_type);
 gboolean gst_pw_audio_format_from_caps(GstPwAudioFormat *pw_audio_format, GstObject *parent, GstCaps *caps);
 gboolean gst_pw_audio_format_to_spa_pod(
 	GstPwAudioFormat const *pw_audio_format,
@@ -192,4 +192,4 @@ void gst_pw_audio_format_probe_cancel(GstPwAudioFormatProbe *pw_audio_format_pro
 G_END_DECLS
 
 
-#endif // __GST_PW_AUDIO_FORMAT_H__
+#endif /* __GST_PW_AUDIO_FORMAT_H__ */

@@ -35,9 +35,6 @@
 #pragma GCC diagnostic pop
 
 
-// TODO: Change API here to reuse cores with the same socket FD.
-
-
 G_BEGIN_DECLS
 
 
@@ -57,6 +54,7 @@ struct _GstPipewireCore
 {
 	GstObject parent;
 
+	int requested_fd;
 	struct pw_thread_loop *loop;
 	struct pw_context *context;
 	struct pw_core *core;
@@ -75,10 +73,8 @@ struct _GstPipewireCoreClass
 
 GType gst_pipewire_core_get_type(void);
 
-GstPipewireCore* gst_pipewire_core_new(void);
-
-gboolean gst_pipewire_core_start(GstPipewireCore *pipewire_core, int socket_fd);
-void gst_pipewire_core_stop(GstPipewireCore *pipewire_core);
+GstPipewireCore* gst_pipewire_core_get(int fd);
+void gst_pipewire_core_release(GstPipewireCore *core);
 
 
 G_END_DECLS
