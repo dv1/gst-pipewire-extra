@@ -734,6 +734,7 @@ gboolean gst_pw_audio_format_to_spa_pod(
 
 			switch (gst_audio_format)
 			{
+				case GST_AUDIO_FORMAT_S8: spa_audio_format = SPA_AUDIO_FORMAT_S8; break;
 				case GST_AUDIO_FORMAT_S16LE: spa_audio_format = SPA_AUDIO_FORMAT_S16_LE; break;
 				case GST_AUDIO_FORMAT_S16BE: spa_audio_format = SPA_AUDIO_FORMAT_S16_BE; break;
 				case GST_AUDIO_FORMAT_S18LE: spa_audio_format = SPA_AUDIO_FORMAT_S18_LE; break;
@@ -747,6 +748,7 @@ gboolean gst_pw_audio_format_to_spa_pod(
 				case GST_AUDIO_FORMAT_S32LE: spa_audio_format = SPA_AUDIO_FORMAT_S32_LE; break;
 				case GST_AUDIO_FORMAT_S32BE: spa_audio_format = SPA_AUDIO_FORMAT_S32_BE; break;
 
+				case GST_AUDIO_FORMAT_U8: spa_audio_format = SPA_AUDIO_FORMAT_U8; break;
 				case GST_AUDIO_FORMAT_U16LE: spa_audio_format = SPA_AUDIO_FORMAT_U16_LE; break;
 				case GST_AUDIO_FORMAT_U16BE: spa_audio_format = SPA_AUDIO_FORMAT_U16_BE; break;
 				case GST_AUDIO_FORMAT_U18LE: spa_audio_format = SPA_AUDIO_FORMAT_U18_LE; break;
