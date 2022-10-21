@@ -178,8 +178,8 @@ gsize gst_pw_audio_ring_buffer_push_frames(
 
 	GST_LOG_OBJECT(
 		ring_buffer,
-		"pushing %" G_GSIZE_FORMAT " out of %" G_GUINT64_FORMAT " frame(s); "
-		"prepending %" G_GSIZE_FORMAT " silence frame(s); "
+		"pushed %" G_GSIZE_FORMAT " out of %" G_GUINT64_FORMAT " frame(s); "
+		"prepended %" G_GSIZE_FORMAT " silence frame(s); "
 		"read / write positions: %" G_GUINT64_FORMAT " / %" G_GUINT64_FORMAT "; "
 		"num buffered frames: %" G_GUINT64_FORMAT "; "
 		"capacity: %" G_GUINT64_FORMAT,
