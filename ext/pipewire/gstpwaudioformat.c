@@ -114,12 +114,48 @@ GstPipewireAudioTypeDetails;
 // Fill in compressed audio support (AC-3 etc).
 
 
+/* Order the PCM formats by quality and performance. 32-bit integer samples
+ * are the first choice - they have plenty of dynamic range and are processed
+ * efficiently. Next come 32- and 64-bit floating point formats, which are
+ * overkill for PCM for 99% of all cases. Next come 24-bit formats (the ones
+ * with 8 extra padding bits are preferred). Then come 16-bit formats, which
+ * have lower dynamic range, but it still suffices in >95% of all cases, and
+ * these samples can be processed very efficiently. After that come formats
+ * that are used very rarely. */
+
+#if G_BYTE_ORDER == G_BIG_ENDIAN  /* architecture is big endian based; prefer big endian formats */
+
+#define GST_PW_PCM_FORMATS "{ " \
+	"S32BE, S32LE, U32BE, U32LE, " \
+	"F32BE, F32LE, F64BE, F64LE, " \
+	"S24_32BE, S24_32LE, U24_32BE, U24_32LE, " \
+	"S24BE, S24LE, U24BE, U24LE, " \
+	"S16BE, S16LE, U16BE, U16LE, " \
+	"S20BE, S20LE, U20BE, U20LE, " \
+	"S18BE, S18LE, U18BE, U18LE, " \
+	"S8, U8 }"
+
+#else /* architecture is little endian based; prefer little endian formats */
+
+#define GST_PW_PCM_FORMATS "{ " \
+	"S32LE, S32BE, U32LE, U32BE, " \
+	"F32LE, F32BE, F64LE, F64BE, " \
+	"S24_32LE, S24_32BE, U24_32LE, U24_32BE, " \
+	"S24LE, S24BE, U24LE, U24BE, " \
+	"S16LE, S16BE, U16LE, U16BE, " \
+	"S20LE, S20BE, U20LE, U20BE, " \
+	"S18LE, S18BE, U18LE, U18BE, " \
+	"S8, U8 }"
+
+#endif
+
+
 static GstPipewireAudioTypeDetails const audio_type_details[GST_NUM_PIPEWIRE_AUDIO_TYPES] = {
 	/* PCM */
 	{
 		.name = "PCM",
 		.template_caps_string = \
-			GST_AUDIO_CAPS_MAKE(GST_AUDIO_FORMATS_ALL) \
+			GST_AUDIO_CAPS_MAKE(GST_PW_PCM_FORMATS) \
 			", layout = (string) { interleaved }",
 		.is_raw = TRUE
 	},
