@@ -133,8 +133,7 @@ gsize gst_pw_audio_ring_buffer_push_frames(
 	gpointer frames,
 	gsize num_frames,
 	gsize num_silence_frames_to_prepend,
-	GstClockTime pts,
-	GstClockTime duration
+	GstClockTime pts
 )
 {
 	guint64 write_lengths[2];
@@ -230,11 +229,18 @@ gsize gst_pw_audio_ring_buffer_push_frames(
 	{
 		GstClockTime newest_pts;
 		GstClockTime oldest_frame_pts;
+		GstClockTime duration;
 
-		g_assert(GST_CLOCK_TIME_IS_VALID(duration));
+		duration = gst_pw_audio_format_calculate_duration_from_num_frames(
+			&(ring_buffer->format),
+			num_frames_to_write
+		);
 
 		newest_pts = pts + duration;
-		g_assert(newest_pts >= ring_buffer->current_fill_level);
+		/* In some corner cases, newest_pts may be behind current_fill_level
+		 * by just 1 nanosecond due to rounding errors in the conversion from
+		 * frames to nanoseconds. Work around this by using MAX(). */
+		newest_pts = MAX(ring_buffer->current_fill_level, newest_pts);
 		oldest_frame_pts = newest_pts - ring_buffer->current_fill_level;
 
 		/* If an oldest frame PTS is already known, check if the oldest PTS we just

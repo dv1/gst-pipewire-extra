@@ -110,7 +110,6 @@ GST_START_TEST(basic_io)
 		frames,
 		num_frames,
 		0,
-		GST_CLOCK_TIME_NONE,
 		GST_CLOCK_TIME_NONE
 	);
 	/* We expect all test frames to be pushed since there's enough room in the ring buffer. */
@@ -131,7 +130,6 @@ GST_START_TEST(basic_io)
 		frames,
 		20,
 		10,
-		GST_CLOCK_TIME_NONE,
 		GST_CLOCK_TIME_NONE
 	);
 	assert_equals_uint64(push_result, 20);
@@ -239,7 +237,6 @@ GST_START_TEST(attempt_to_retrieve_more_frames_than_available)
 		frames,
 		10,
 		0,
-		GST_CLOCK_TIME_NONE,
 		GST_CLOCK_TIME_NONE
 	);
 
@@ -314,7 +311,6 @@ GST_START_TEST(attempt_to_push_frames_when_full)
 		frames,
 		num_frames,
 		0,
-		GST_CLOCK_TIME_NONE,
 		GST_CLOCK_TIME_NONE
 	);
 	assert_equals_uint64(push_result, num_frames);
@@ -328,7 +324,6 @@ GST_START_TEST(attempt_to_push_frames_when_full)
 		frames,
 		10,
 		0,
-		GST_CLOCK_TIME_NONE,
 		GST_CLOCK_TIME_NONE
 	);
 	assert_equals_uint64(push_result, 0);
@@ -382,8 +377,7 @@ GST_START_TEST(basic_timestamped_io)
 		frames,
 		num_frames_for_1ms,
 		0,
-		GST_MSECOND * 10,
-		GST_MSECOND
+		GST_MSECOND * 10
 	);
 	assert_equals_uint64(push_result, num_frames_for_1ms);
 	assert_equals_uint64(ring_buffer->oldest_frame_pts, GST_MSECOND * 10);
@@ -403,8 +397,7 @@ GST_START_TEST(basic_timestamped_io)
 		frames,
 		num_frames_for_1ms,
 		0,
-		GST_MSECOND * 11,
-		GST_MSECOND
+		GST_MSECOND * 11
 	);
 	assert_equals_uint64(push_result, num_frames_for_1ms);
 	assert_equals_uint64(ring_buffer->oldest_frame_pts, GST_MSECOND * 10);
@@ -430,8 +423,7 @@ GST_START_TEST(basic_timestamped_io)
 		frames,
 		num_frames_for_1ms,
 		0,
-		GST_MSECOND * 15,
-		GST_MSECOND
+		GST_MSECOND * 15
 	);
 	assert_equals_uint64(push_result, num_frames_for_1ms);
 	assert_equals_uint64(ring_buffer->oldest_frame_pts, GST_MSECOND * 10);
@@ -509,8 +501,7 @@ GST_START_TEST(buffered_frames_fully_in_the_future)
 		frames,
 		num_frames_for_1ms,
 		0,
-		GST_MSECOND * 10,
-		GST_MSECOND
+		GST_MSECOND * 10
 	);
 	assert_equals_uint64(push_result, num_frames_for_1ms);
 	assert_equals_uint64(ring_buffer->oldest_frame_pts, GST_MSECOND * 10);
@@ -582,8 +573,7 @@ GST_START_TEST(buffered_frames_fully_in_the_past)
 		frames,
 		num_frames_for_1ms,
 		0,
-		GST_MSECOND * 10,
-		GST_MSECOND
+		GST_MSECOND * 10
 	);
 	assert_equals_uint64(push_result, num_frames_for_1ms);
 	assert_equals_uint64(ring_buffer->oldest_frame_pts, GST_MSECOND * 10);
@@ -658,7 +648,6 @@ GST_START_TEST(buffered_frames_partially_in_the_future)
 		frames,
 		num_frames_for_10ms,
 		0,
-		GST_MSECOND * 10,
 		GST_MSECOND * 10
 	);
 	assert_equals_uint64(push_result, num_frames_for_10ms);
@@ -738,7 +727,6 @@ GST_START_TEST(buffered_frames_partially_in_the_past)
 		frames,
 		num_frames_for_10ms,
 		0,
-		GST_MSECOND * 10,
 		GST_MSECOND * 10
 	);
 	assert_equals_uint64(push_result, num_frames_for_10ms);
@@ -817,7 +805,6 @@ GST_START_TEST(buffered_frames_partially_in_the_future_within_skew_threshold)
 		frames,
 		num_frames_for_10ms,
 		0,
-		GST_MSECOND * 10,
 		GST_MSECOND * 10
 	);
 	assert_equals_uint64(push_result, num_frames_for_10ms);

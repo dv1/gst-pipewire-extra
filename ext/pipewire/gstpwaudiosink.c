@@ -2087,8 +2087,7 @@ static GstFlowReturn gst_pw_audio_sink_render_raw(GstPwAudioSink *self, GstBuffe
 				map_info.data,
 				num_frames,
 				num_silence_frames_to_insert,
-				GST_BUFFER_PTS(incoming_buffer_copy),
-				GST_BUFFER_DURATION(incoming_buffer_copy)
+				GST_BUFFER_PTS(incoming_buffer_copy)
 			);
 
 			gst_buffer_unmap(incoming_buffer_copy, &map_info);

@@ -162,8 +162,7 @@ gsize gst_pw_audio_ring_buffer_push_frames(
 	gpointer frames,
 	gsize num_frames,
 	gsize num_silence_frames_to_prepend,
-	GstClockTime pts,
-	GstClockTime duration
+	GstClockTime pts
 );
 
 GstPwAudioRingBufferRetrievalResult gst_pw_audio_ring_buffer_retrieve_frames(
