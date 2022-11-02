@@ -1732,36 +1732,27 @@ static GstFlowReturn gst_pw_audio_sink_render_raw(GstPwAudioSink *self, GstBuffe
 	gboolean sync_enabled;
 	gboolean force_discontinuity_handling = FALSE;
 	gsize num_silence_frames_to_insert = 0;
-	GstClockTime buffer_duration;
+	GstClockTime computed_original_buffer_duration;
 	gsize num_frames;
 
 	num_frames = gst_buffer_get_size(original_incoming_buffer) / self->stride;
 
-	if (GST_BUFFER_DURATION_IS_VALID(original_incoming_buffer))
-	{
-		buffer_duration = GST_BUFFER_DURATION(original_incoming_buffer);
-		GST_LOG_OBJECT(
-			self,
-			"original incoming buffer: %" GST_PTR_FORMAT "; num frames: %" G_GSIZE_FORMAT,
-			(gpointer)original_incoming_buffer,
-			num_frames
-		);
-	}
-	else
-	{
-		buffer_duration = gst_pw_audio_format_calculate_duration_from_num_frames(
-			&(self->pw_audio_format),
-			num_frames
-		);
+	/* For PCM/DSD audio data, it is better to not rely on values from GST_BUFFER_DURATION.
+	 * These can be invalid, completely absent, or differ in length from the playtime of
+	 * the actual data. For example, with some older WMA files, buffers could have a duration
+	 * value of 2 ms more than the playtime duration of the actual decoded PCM data. */
+	computed_original_buffer_duration = gst_pw_audio_format_calculate_duration_from_num_frames(
+		&(self->pw_audio_format),
+		num_frames
+	);
 
-		GST_LOG_OBJECT(
-			self,
-			"original incoming buffer: %" GST_PTR_FORMAT "; num frames: %" G_GSIZE_FORMAT "; no valid duration set, estimated duration %" GST_TIME_FORMAT " based on its data",
-			(gpointer)original_incoming_buffer,
-			num_frames,
-			GST_TIME_ARGS(buffer_duration)
-		);
-	}
+	GST_LOG_OBJECT(
+		self,
+		"original incoming buffer: %" GST_PTR_FORMAT "; num frames: %" G_GSIZE_FORMAT "; calculated duration %" GST_TIME_FORMAT " based on number of frames",
+		(gpointer)original_incoming_buffer,
+		num_frames,
+		GST_TIME_ARGS(computed_original_buffer_duration)
+	);
 
 	if (G_UNLIKELY(GST_BUFFER_FLAG_IS_SET(original_incoming_buffer, GST_BUFFER_FLAG_DISCONT)))
 	{
@@ -1840,7 +1831,7 @@ static GstFlowReturn gst_pw_audio_sink_render_raw(GstPwAudioSink *self, GstBuffe
 		GstSegment pts_clipping_segment;
 
 		pts_begin = GST_BUFFER_PTS(original_incoming_buffer);
-		pts_end = GST_BUFFER_PTS(original_incoming_buffer) + buffer_duration;
+		pts_end = GST_BUFFER_PTS(original_incoming_buffer) + computed_original_buffer_duration;
 
 		gst_segment_init(&pts_clipping_segment, GST_FORMAT_TIME);
 		pts_clipping_segment.start = segment->start;
