@@ -334,6 +334,67 @@ GST_START_TEST(attempt_to_push_frames_when_full)
 GST_END_TEST
 
 
+GST_START_TEST(attempt_to_push_frames_when_almost_full)
+{
+	/* Test attempts to push frames into a ring buffer that
+	 * is full. We expect the push_frames call to only
+	 * push the first N frames. */
+
+	GstPwAudioFormat format = {
+		.audio_type = GST_PIPEWIRE_AUDIO_TYPE_PCM,
+	};
+	GstPwAudioRingBuffer *ring_buffer;
+	gsize push_result;
+	enum { num_frames = CALC_NUM_FRAMES_FOR_MSECS(100) - 4 };
+	gint16 frames[num_frames * NUM_CHANNELS];
+	guint i;
+
+	gst_audio_info_set_format(
+		&(format.info.pcm_audio_info),
+		PCM_SAMPLE_FORMAT,
+		PCM_SAMPLE_RATE,
+		NUM_CHANNELS,
+		NULL
+	);
+
+	/* Pass 100 milliseconds as ring buffer length to match the
+	 * ring buffer length to that of the input buffer. This
+	 * makes it simpler to fully fill the ring buffer in one go. */
+	ring_buffer = gst_pw_audio_ring_buffer_new(&format, GST_MSECOND * 100);
+	fail_if(ring_buffer == NULL);
+
+	/* Fill the ring buffer as preparation. */
+	memset(ring_buffer->buffered_frames, 0, ring_buffer->stride * ring_buffer->metrics.capacity);
+	for (i = 0; i < num_frames; ++i)
+		frames[i] = i + 10;
+	push_result = gst_pw_audio_ring_buffer_push_frames(
+		ring_buffer,
+		frames,
+		num_frames,
+		0,
+		GST_CLOCK_TIME_NONE
+	);
+	assert_equals_uint64(push_result, num_frames);
+	assert_equals_uint64(ring_buffer->metrics.current_num_buffered_frames, num_frames);
+
+	/* Now try to push 10 frames into the ring buffer. We expect this to return 4,
+	 * indicating that 4 frames were pushed (because the ring buffer is almost full). */
+	memset(frames, 0, sizeof(frames));
+	push_result = gst_pw_audio_ring_buffer_push_frames(
+		ring_buffer,
+		frames,
+		10,
+		0,
+		GST_CLOCK_TIME_NONE
+	);
+	assert_equals_uint64(push_result, 4);
+	assert_equals_uint64(ring_buffer->metrics.current_num_buffered_frames, CALC_NUM_FRAMES_FOR_MSECS(100));
+
+	gst_object_unref(GST_OBJECT(ring_buffer));
+}
+GST_END_TEST
+
+
 GST_START_TEST(basic_timestamped_io)
 {
 	/* Test basic, timestamped IO operations. This test works by pushing
@@ -854,6 +915,7 @@ static Suite * gst_pw_audio_ring_buffer_suite(void)
 	tcase_add_test(tc, basic_io);
 	tcase_add_test(tc, attempt_to_retrieve_more_frames_than_available);
 	tcase_add_test(tc, attempt_to_push_frames_when_full);
+	tcase_add_test(tc, attempt_to_push_frames_when_almost_full);
 	tcase_add_test(tc, basic_timestamped_io);
 	tcase_add_test(tc, buffered_frames_fully_in_the_future);
 	tcase_add_test(tc, buffered_frames_fully_in_the_past);
