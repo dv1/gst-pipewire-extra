@@ -1734,6 +1734,8 @@ static GstFlowReturn gst_pw_audio_sink_render_raw(GstPwAudioSink *self, GstBuffe
 	gsize num_silence_frames_to_insert = 0;
 	GstClockTime computed_original_buffer_duration;
 	gsize num_frames;
+	gsize num_remaining_frames_to_push;
+	gsize incoming_buffer_frame_offset;
 
 	num_frames = gst_buffer_get_size(original_incoming_buffer) / self->stride;
 
@@ -2021,8 +2023,16 @@ static GstFlowReturn gst_pw_audio_sink_render_raw(GstPwAudioSink *self, GstBuffe
 		self->expected_next_running_time_pts = GST_CLOCK_TIME_NONE;
 	}
 
+	num_remaining_frames_to_push = num_frames;
+	incoming_buffer_frame_offset = 0;
+
 	while (TRUE)
 	{
+		GstMapInfo map_info;
+		gboolean map_ret;
+		gsize num_pushed_frames;
+		GstClockTime pts_offset;
+
 		if (g_atomic_int_get(&(self->flushing)))
 		{
 			GST_DEBUG_OBJECT(self, "exiting loop in render function since we are flushing");
@@ -2047,69 +2057,55 @@ static GstFlowReturn gst_pw_audio_sink_render_raw(GstPwAudioSink *self, GstBuffe
 			g_atomic_int_set(&(self->notify_upstream_about_stream_delay), 0);
 		}
 
+		map_ret = gst_buffer_map(incoming_buffer_copy, &map_info, GST_MAP_READ);
+		if (G_UNLIKELY(!map_ret))
+		{
+			GST_ERROR_OBJECT(self, "could not map incoming buffer; buffer details: %" GST_PTR_FORMAT, (gpointer)incoming_buffer_copy);
+			flow_ret = GST_FLOW_ERROR;
+			goto finish;
+		}
+
 		LOCK_AUDIO_DATA_BUFFER_MUTEX(self);
 
-		if ((self->ring_buffer->metrics.current_num_buffered_frames + num_silence_frames_to_insert + num_frames) >= self->ring_buffer->metrics.capacity)
+		pts_offset = gst_pw_audio_format_calculate_duration_from_num_frames(
+			&(self->ring_buffer->format),
+			incoming_buffer_frame_offset
+		);
+
+		num_pushed_frames = gst_pw_audio_ring_buffer_push_frames(
+			self->ring_buffer,
+			map_info.data + incoming_buffer_frame_offset * self->stride,
+			num_remaining_frames_to_push,
+			num_silence_frames_to_insert,
+			GST_BUFFER_PTS(incoming_buffer_copy) + pts_offset
+		);
+
+		gst_buffer_unmap(incoming_buffer_copy, &map_info);
+
+		g_assert(num_pushed_frames <= num_remaining_frames_to_push);
+
+		if (num_pushed_frames == num_remaining_frames_to_push)
+		{
+			UNLOCK_AUDIO_DATA_BUFFER_MUTEX(self);
+			GST_LOG_OBJECT(self, "all (remaining) %" G_GSIZE_FORMAT " frames pushed", num_remaining_frames_to_push);
+			break;
+		}
+		else
 		{
 			GST_LOG_OBJECT(
 				self,
-				"insufficient room for %" G_GSIZE_FORMAT " more frames and %" G_GSIZE_FORMAT " silence frames (cur/max number of buffered frames: %" G_GUINT64_FORMAT "/%" G_GUINT64_FORMAT "); waiting until there is more room",
-				num_frames, num_silence_frames_to_insert,
-				self->ring_buffer->metrics.current_num_buffered_frames, self->ring_buffer->metrics.capacity
+				"attempted to push %" G_GSIZE_FORMAT " frame(s), actually pushed %" G_GSIZE_FORMAT "; waiting until there is more room",
+				num_remaining_frames_to_push,
+				num_pushed_frames
 			);
+
 			g_cond_wait(&(self->audio_data_buffer_cond), &(self->audio_data_buffer_mutex));
 
 			UNLOCK_AUDIO_DATA_BUFFER_MUTEX(self);
 		}
-		else
-		{
-			GstMapInfo map_info;
-			gboolean map_ret;
-			gsize num_pushed_frames;
 
-			GST_LOG_OBJECT(
-				self,
-				"sufficient room for more data (cur/max number of buffered frames: %" G_GUINT64_FORMAT "/%" G_GUINT64_FORMAT "); can push frames",
-				self->ring_buffer->metrics.current_num_buffered_frames, self->ring_buffer->metrics.capacity
-			);
-
-			map_ret = gst_buffer_map(incoming_buffer_copy, &map_info, GST_MAP_READ);
-			if (G_UNLIKELY(!map_ret))
-			{
-				UNLOCK_AUDIO_DATA_BUFFER_MUTEX(self);
-				GST_ERROR_OBJECT(self, "could not map incoming buffer; buffer details: %" GST_PTR_FORMAT, (gpointer)incoming_buffer_copy);
-				flow_ret = GST_FLOW_ERROR;
-				goto finish;
-			}
-
-			num_pushed_frames = gst_pw_audio_ring_buffer_push_frames(
-				self->ring_buffer,
-				map_info.data,
-				num_frames,
-				num_silence_frames_to_insert,
-				GST_BUFFER_PTS(incoming_buffer_copy)
-			);
-
-			gst_buffer_unmap(incoming_buffer_copy, &map_info);
-
-			UNLOCK_AUDIO_DATA_BUFFER_MUTEX(self);
-
-			if (G_UNLIKELY(num_pushed_frames != num_frames))
-			{
-				GST_ERROR_OBJECT(
-					self,
-					"attempted to push %" G_GSIZE_FORMAT " frames (%" G_GSIZE_FORMAT " audio data frames, %" G_GSIZE_FORMAT " prepended silence frames), actually pushed %" G_GSIZE_FORMAT,
-					num_frames + num_silence_frames_to_insert,
-					num_frames,
-					num_silence_frames_to_insert,
-					num_pushed_frames
-				);
-				flow_ret = GST_FLOW_ERROR;
-				goto finish;
-			}
-
-			break;
-		}
+		num_remaining_frames_to_push -= num_pushed_frames;
+		incoming_buffer_frame_offset += num_pushed_frames;
 	}
 
 finish:
