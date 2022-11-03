@@ -211,21 +211,18 @@ gsize gst_pw_audio_ring_buffer_push_frames(
 		ring_buffer->metrics.current_num_buffered_frames
 	);
 
-	/* Update the oldest_frame_pts if we have written all input frames.
-	 * (Partial writes can happen if the ring buffer currently does not have
-	 * enough free space.) To do this, calculate the PTS of the *newest* data -
-	 * that is, the PTS that is right at the end of the buffer that was just
-	 * supplied - and subtract the current fill level from it. Since the
-	 * buffered data is made of a sequence of raw frames (there are no "holes"
-	 * in the ring buffer), (newest_pts - current_fill_level) must equal the
-	 * oldest frame PTS. */
+	/* Update the oldest_frame_pts. To do this, calculate the PTS of the
+	 * *newest* data - that is, the PTS that is right at the end of the buffer
+	 * that was just supplied - and subtract the current fill level from it.
+	 * Since the buffered data is made of a sequence of raw frames (there are
+	 * no "holes" in the ring buffer), (newest_pts - current_fill_level) must
+	 * equal the oldest frame PTS. */
 	// TODO: This should only be necessary when oldest_frame_pts is not
 	// initialized, and in fact could interfere with the behavior of
 	// gst_pw_audio_ring_buffer_retrieve_buffer. But in practice, if
 	// these updates are not constantly done, playback is not properly
 	// in sync. Find out why.
-	if ((num_frames == num_frames_to_write) &&
-		GST_CLOCK_TIME_IS_VALID(pts))
+	if (GST_CLOCK_TIME_IS_VALID(pts))
 	{
 		GstClockTime newest_pts;
 		GstClockTime oldest_frame_pts;
