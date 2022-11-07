@@ -187,7 +187,8 @@ struct _GstPwAudioSink
 	gboolean synced_playback_started;
 	/* Used for checking the buffer PTS for discontinuities. */
 	GstClockTime expected_next_running_time_pts;
-	/* Latency in nanoseconds, based on the value of stream_delay_in_ns. */
+	/* Pipeline latency in nanoseconds. Set when the latency event
+	 * is processed in send_event(). */
 	GstClockTime latency;
 	/* The latency_mutex synchronizes access to latency and stream_delay_in_ns. */
 	GMutex latency_mutex;
@@ -943,6 +944,9 @@ static gboolean gst_pw_audio_sink_send_event(GstElement *element, GstEvent *even
 			LOCK_LATENCY_MUTEX(self);
 			gst_event_parse_latency(event, &(self->latency));
 			UNLOCK_LATENCY_MUTEX(self);
+
+			GST_DEBUG_OBJECT(self, "got base sink latency: %" GST_TIME_FORMAT, GST_TIME_ARGS(self->latency));
+
 			break;
 
 		default:
@@ -2571,10 +2575,10 @@ static void gst_pw_audio_sink_raw_on_process_stream(void *data)
 	struct pw_time stream_time;
 	struct pw_buffer *pw_buf;
 	struct spa_data *inner_spa_data;
-	GstClockTime latency;
+	GstClockTime upstream_pipeline_latency;
 	gint64 stream_delay_in_ns;
-	gint64 refined_stream_delay_in_ns;
 	guint64 num_frames_to_produce;
+	gint64 time_since_delay_measurement;
 	gboolean produce_silence_quantum = TRUE;
 
 	GST_LOG_OBJECT(self, COLOR_GREEN "new PipeWire graph tick" COLOR_DEFAULT);
@@ -2641,62 +2645,46 @@ static void gst_pw_audio_sink_raw_on_process_stream(void *data)
 	else
 		stream_delay_in_ns = self->stream_delay_in_ns;
 
-	/* Factor the quantum size into the latency. This is because in this call, we
-	 * are producing data for the *next* tick, and the next tick's timestamp is:
-	 *
-	 * current_time + quantum_length
-	 */
-	latency = self->latency + self->quantum_size_in_ns;
+	/* In live pipelines, the pipeline has a defined latency. This sink element
+	 * gets the latency in a latency event (see gst_pw_audio_sink_send_event())
+	 * and is stored there in self->latency. That latency quantity includes our
+	 * own latency, that is, the value of stream_delay_in_ns. Thus, if the
+	 * pipeline is live, then self->latency must include the value of stream_delay_in_ns,
+	 * and therefore, self->latency >= stream_delay_in_ns must hold. We are
+	 * interested in the latency upstream elements add; we already know our own
+	 * latency (it is defined by stream_delay_in_ns). Subtract stream_delay_in_ns
+	 * to get the upstream latency _without_ our own. But if this is not a live
+	 * pipeline, then self->latency >= stream_delay_in_ns won't hold, and we use
+	 * 0 as the upstream latency (since there is none in non-live pipelines). */
+	upstream_pipeline_latency = ((gint64)(self->latency) >= stream_delay_in_ns) ? (self->latency - stream_delay_in_ns) : 0;
 
 	UNLOCK_LATENCY_MUTEX(self);
 
 	/* stream_time.delay was measured at the stream_time.now timestamp.
 	 * That timestamp was recorded using the monotonic system clock.
-	 * To further refine the delay, calculate how much time has elapsed
-	 * since stream_time.delay was sampled. */
-
+	 * To further refine the frame retrieval, calculate how much time has
+	 * elapsed since stream_time.delay was sampled. */
 	{
 		struct timespec ts;
-		gint64 time_since_delay_measurement;
 
 		clock_gettime(CLOCK_MONOTONIC, &ts);
 		time_since_delay_measurement = SPA_TIMESPEC_TO_NSEC(&ts) - stream_time.now;
 
 		if (G_LIKELY(stream_delay_in_ns >= time_since_delay_measurement))
 		{
-			refined_stream_delay_in_ns = stream_delay_in_ns - time_since_delay_measurement;
-			GST_LOG_OBJECT(
-				self,
-				"original / refined stream delay: %" GST_TIME_FORMAT " / %" GST_TIME_FORMAT " (delta: %" G_GINT64_FORMAT ")",
-				GST_TIME_ARGS(stream_delay_in_ns),
-				GST_TIME_ARGS(refined_stream_delay_in_ns),
-				time_since_delay_measurement
-			);
+			GST_LOG_OBJECT(self, "nanoseconds since delay measurement: %" G_GINT64_FORMAT, time_since_delay_measurement);
 		}
 		else
 		{
 			GST_WARNING_OBJECT(
 				self,
-				"time since delay measurement (%" G_GINT64_FORMAT ") exceeds stream delay (%" G_GINT64_FORMAT "); underrun is likely to have occurred; setting delay to 0 and resynchronizing",
+				"nanoseconds since delay measurement (%" G_GINT64_FORMAT ") exceed stream delay (%" G_GINT64_FORMAT "); underrun is likely to have occurred; resynchronizing",
 				time_since_delay_measurement,
 				stream_delay_in_ns
 			);
-			refined_stream_delay_in_ns = 0;
 			self->synced_playback_started = FALSE;
 		}
 	}
-
-	/* Subtract the refined_stream_delay_in_ns value from the latency value.
-	 * The data we put into the SPA data chunks here now will be placed
-	 * in refined_stream_delay_in_ns nanoseconds, so it is already implicitly
-	 * factored into our output. refined_stream_delay_in_ns is added to the
-	 * GStreamer base sink latency for GstBaseSink's own purposes and
-	 * for correctly responding to latency queries. It is not meant
-	 * for the gst_pw_audio_ring_buffer_retrieve_frames() calls here. */
-	if (G_LIKELY((GstClockTimeDiff)latency >= refined_stream_delay_in_ns))
-		latency -= refined_stream_delay_in_ns;
-	else
-		latency = 0;
 
 	pw_buf = pw_stream_dequeue_buffer(self->stream);
 	if (G_UNLIKELY(pw_buf == NULL))
@@ -2777,19 +2765,24 @@ static void gst_pw_audio_sink_raw_on_process_stream(void *data)
 					self,
 					"current time: %" GST_TIME_FORMAT "  "
 					"num frames to produce: %" G_GUINT64_FORMAT "  "
-					"latency: %" GST_TIME_FORMAT,
+					"upstream pipeline latency: %" GST_TIME_FORMAT,
 					GST_TIME_ARGS(current_time),
 					num_frames_to_produce,
-					GST_TIME_ARGS(latency)
+					GST_TIME_ARGS(upstream_pipeline_latency)
 				);
 
 				// TODO: use gst_pipewire_dsd_convert() if necessary
+				/* We use both upstream_pipeline_latency and time_since_delay_measurement
+				 * for the PTS shift quantity. The former is necessary to compensate for
+				 * the upstream pipeline latency. The latter is necessary to retrieve data
+				 * from a moment that corresponds to the scheduled beginning of this
+				 * pipewire graph tick. */
 				retrieval_result = gst_pw_audio_ring_buffer_retrieve_frames(
 					self->ring_buffer,
 					inner_spa_data->data,
 					num_frames_to_produce,
 					current_time,
-					latency,
+					upstream_pipeline_latency + time_since_delay_measurement,
 					effective_skew_threshold,
 					&buffered_frames_to_retrieval_pts_delta
 				);
