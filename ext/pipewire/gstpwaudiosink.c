@@ -2036,6 +2036,7 @@ static GstFlowReturn gst_pw_audio_sink_render_raw(GstPwAudioSink *self, GstBuffe
 		gboolean map_ret;
 		gsize num_pushed_frames;
 		GstClockTime pts_offset;
+		GstClockTime push_pts;
 
 		if (g_atomic_int_get(&(self->flushing)))
 		{
@@ -2076,12 +2077,14 @@ static GstFlowReturn gst_pw_audio_sink_render_raw(GstPwAudioSink *self, GstBuffe
 			incoming_buffer_frame_offset
 		);
 
+		push_pts = GST_BUFFER_PTS_IS_VALID(incoming_buffer_copy) ? (GST_BUFFER_PTS(incoming_buffer_copy) + pts_offset) : GST_CLOCK_TIME_NONE;
+
 		num_pushed_frames = gst_pw_audio_ring_buffer_push_frames(
 			self->ring_buffer,
 			map_info.data + incoming_buffer_frame_offset * self->stride,
 			num_remaining_frames_to_push,
 			num_silence_frames_to_insert,
-			GST_BUFFER_PTS(incoming_buffer_copy) + pts_offset
+			push_pts
 		);
 
 		gst_buffer_unmap(incoming_buffer_copy, &map_info);
