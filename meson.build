@@ -1,4 +1,4 @@
-project('gstpipewire', 'c', default_options : ['c_std=gnu99'], version : '1.0.0')
+project('gst-pipewire-extra', 'c', default_options : ['c_std=gnu99'], version : '1.0.0')
 
 gstreamer_dep       = dependency('gstreamer-1.0',       required : true)
 gstreamer_base_dep  = dependency('gstreamer-base-1.0',  required : true)
@@ -16,13 +16,13 @@ configinc = include_directories('.')
 conf_data = configuration_data()
 conf_data.set_quoted('GST_PACKAGE_NAME', get_option('package-name'))
 conf_data.set_quoted('GST_PACKAGE_ORIGIN', get_option('package-origin'))
-conf_data.set_quoted('PACKAGE', 'gstpipewire')
-conf_data.set_quoted('PACKAGE_BUGREPORT', 'https://github.com/dv1/gstpipewire')
+conf_data.set_quoted('PACKAGE', 'gst-pipewire-extra')
+conf_data.set_quoted('PACKAGE_BUGREPORT', 'https://github.com/dv1/gst-pipewire-extra')
 conf_data.set_quoted('VERSION', meson.project_version())
 
 
-gstpipewire_plugin = library(
-	'gstpipewire',
+gstpipewireextra_plugin = library(
+	'gstpipewireextra',
 	[
 		'ext/pipewire/gstpwaudioformat.c',
 		'ext/pipewire/gstpwaudioringbuffer.c',
@@ -41,7 +41,7 @@ gstpipewire_plugin = library(
 test_check_stream_clock = executable(
 	'check_stream_clock',
 	['test/check_stream_clock.c'],
-	link_with: [gstpipewire_plugin],
+	link_with: [gstpipewireextra_plugin],
 	include_directories: [configinc, 'ext/pipewire'],
 	dependencies : [gstreamer_dep, gstreamer_base_dep, gstreamer_audio_dep, gstreamer_check_dep, libpipewire_dep]
 )
@@ -50,7 +50,7 @@ test('check_stream_clock', test_check_stream_clock)
 test_check_dsd_convert = executable(
 	'check_dsd_convert',
 	['test/check_dsd_convert.c'],
-	link_with: [gstpipewire_plugin],
+	link_with: [gstpipewireextra_plugin],
 	include_directories: [configinc, 'ext/pipewire'],
 	dependencies : [gstreamer_dep, gstreamer_base_dep, gstreamer_audio_dep, gstreamer_check_dep, libpipewire_dep]
 )
@@ -59,7 +59,7 @@ test('check_dsd_convert', test_check_dsd_convert)
 test_check_dsd_convert = executable(
 	'check_utils',
 	['test/check_utils.c'],
-	link_with: [gstpipewire_plugin],
+	link_with: [gstpipewireextra_plugin],
 	include_directories: [configinc, 'ext/pipewire'],
 	dependencies : [gstreamer_dep, gstreamer_base_dep, gstreamer_audio_dep, gstreamer_check_dep, libpipewire_dep]
 )
@@ -68,7 +68,7 @@ test('check_utils', test_check_dsd_convert)
 test_check_dsd_convert = executable(
 	'check_pwaudioringbuffer',
 	['test/check_pwaudioringbuffer.c'],
-	link_with: [gstpipewire_plugin],
+	link_with: [gstpipewireextra_plugin],
 	include_directories: [configinc, 'ext/pipewire'],
 	dependencies : [gstreamer_dep, gstreamer_base_dep, gstreamer_audio_dep, gstreamer_check_dep, libpipewire_dep]
 )

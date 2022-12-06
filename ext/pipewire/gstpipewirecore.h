@@ -1,4 +1,4 @@
-/* gst-pipewire
+/* gst-pipewire-extra
  *
  * Copyright © 2022 Carlos Rafael Giani
  *

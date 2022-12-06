@@ -1,4 +1,4 @@
-/* gst-pipewire
+/* gst-pipewire-extra
  *
  * Copyright © 2022 Carlos Rafael Giani
  *
@@ -54,7 +54,7 @@ static gboolean plugin_init(GstPlugin *plugin)
 GST_PLUGIN_DEFINE(
 	GST_VERSION_MAJOR,
 	GST_VERSION_MINOR,
-	pipewire,
+	pipewireextra,
 	"elements for transferring data from and to a PipeWire graph",
 	plugin_init,
 	VERSION,

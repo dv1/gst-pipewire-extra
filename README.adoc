@@ -1,6 +1,6 @@
-= gst-pipewire
+= gst-pipewire-extra
 
-This is a GStreamer plugin that is an alternative to the one included in PipeWire.
+This is a GStreamer plugin that is an alternative/addition to the one included in PipeWire.
 It is a separate plugin that contains more experimental features not yet present
 in PipeWire's GStreamer plugin.
 
@@ -9,7 +9,7 @@ The long term goal is to merge this plugin with PipeWire's.
 
 == Building and installing
 
-gst-pipewire uses https://mesonbuild.com[meson] as its build system. Amongst other reasons, this makes
+gst-pipewire-extra uses https://mesonbuild.com[meson] as its build system. Amongst other reasons, this makes
 integration with existing GStreamer build setups easier, such as https://gitlab.freedesktop.org/gstreamer/cerbero[Cerbero].
 
 The build was tested with meson 0.61.0, but older versions should be supported as well.
