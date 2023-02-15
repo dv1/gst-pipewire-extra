@@ -33,6 +33,7 @@
 #include <gst/audio/audio.h>
 
 #include <stdint.h>
+#include <string.h>
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wpedantic"
@@ -97,6 +98,9 @@ enum
 #define LOCK_LATENCY_MUTEX(pw_audio_sink) g_mutex_lock(&((pw_audio_sink)->latency_mutex))
 #define UNLOCK_LATENCY_MUTEX(pw_audio_sink) g_mutex_unlock(&((pw_audio_sink)->latency_mutex))
 
+// TODO: Make this configurable
+#define MAX_ENCODED_DATA_QUEUE_LENGTH 2
+
 /* Factors for the PI controller. Empirically picked. */
 #define PI_CONTROLLER_KI_FACTOR 0.01
 #define PI_CONTROLLER_KP_FACTOR 0.15
@@ -138,11 +142,15 @@ struct _GstPwAudioSink
 
 	/** Buffers for audio data **/
 
-	/* NOTE: Access to the ring buffer's data and PTS & current fill level states
-	 * requires the audio_data_buffer_mutex to be locked if the pw_stream is connected. */
+
+	/* NOTE: Access to the these data structures and PTS & current fill level states
+	 * requires the audio_data_buffer_mutex to be locked if the pw_stream is connected.
+	 *
+	 * The ring_buffer is used for raw audio, the encoded_data_queue for encoded audio. */
 	GstPwAudioRingBuffer *ring_buffer;
 	GMutex audio_data_buffer_mutex;
 	GCond audio_data_buffer_cond;
+	GstQueueArray *encoded_data_queue;
 
 	/** PCM clock drift compensation states **/
 
@@ -195,6 +203,14 @@ struct _GstPwAudioSink
 	/* Set to true in the on_stream_drained() callback. Used for waiting until the
 	 * pw_stream itself is drained. */
 	gboolean stream_drained;
+	/* Relevant for encoded audio. If the encoded audio frames are larger than the
+	 * requested audio length during a cycle, then this counter keeps track of the
+	 * excess playtime that is sent into the graph. It is not possible to subdivide
+	 * an encoded frame, so if it is longer than the quantum, it still has to be sent
+	 * as-is. By keeping track of the excess, the gst_pw_audio_sink_render_encoded()
+	 * function can produce "null frames" at appropriate times to compensate for the
+	 * excess playtime, avoiding an overflow in the PipeWire sink. */
+	GstClockTime accum_excess_encaudio_playtime;
 
 	/** Element clock **/
 
@@ -556,6 +572,7 @@ static void gst_pw_audio_sink_init(GstPwAudioSink *self)
 	self->cache_probed_caps = DEFAULT_CACHE_PROBED_CAPS;
 
 	self->sink_caps = NULL;
+	memset(&(self->pw_audio_format), 0, sizeof(self->pw_audio_format));
 	self->format_probe = NULL;
 	g_mutex_init(&(self->probe_process_mutex));
 	self->cached_probed_caps = NULL;
@@ -563,6 +580,7 @@ static void gst_pw_audio_sink_init(GstPwAudioSink *self)
 	self->ring_buffer = NULL;
 	g_mutex_init(&(self->audio_data_buffer_mutex));
 	g_cond_init(&(self->audio_data_buffer_cond));
+	self->encoded_data_queue = NULL;
 
 	pi_controller_init(&(self->pi_controller), PI_CONTROLLER_KI_FACTOR, PI_CONTROLLER_KP_FACTOR);
 	gst_pw_audio_sink_reset_drift_compensation_states(self);
@@ -574,6 +592,7 @@ static void gst_pw_audio_sink_init(GstPwAudioSink *self)
 	self->latency = 0;
 	g_mutex_init(&(self->latency_mutex));
 	self->stream_drained = FALSE;
+	self->accum_excess_encaudio_playtime = 0;
 
 	self->stream_clock = gst_pw_stream_clock_new(NULL);
 	g_assert(self->stream_clock != NULL);
@@ -596,16 +615,11 @@ static void gst_pw_audio_sink_init(GstPwAudioSink *self)
 	gst_pw_audio_sink_set_provide_clock_flag(self, DEFAULT_PROVIDE_CLOCK);
 }
 
-
 static void gst_pw_audio_sink_dispose(GObject *object)
 {
 	GstPwAudioSink *self = GST_PW_AUDIO_SINK(object);
 
-	if (self->ring_buffer != NULL)
-	{
-		gst_object_unref(GST_OBJECT(self->ring_buffer));
-		self->ring_buffer = NULL;
-	}
+	gst_pw_audio_sink_teardown_audio_data_buffer(self);
 
 	if (self->stream_clock != NULL)
 	{
@@ -966,11 +980,19 @@ static gboolean gst_pw_audio_sink_query(GstElement *element, GstQuery *query)
 	{
 		case GST_QUERY_LATENCY:
 		{
-			// TODO calculations are hardcoded to use ring buffer length; be more flexible
-			// to allow for encoded audio as well
 			gboolean sink_is_live, upstream_is_live;
 			GstClockTime min_latency, max_latency;
 			GstClockTime stream_delay_in_ns, ring_buffer_length_in_ns;
+
+			/* There is no special logic for latency calculations
+			 * when playing encoded audio, so just do the default
+			 * handling and exit. */
+			if (!gst_pw_audio_format_data_is_raw(self->pw_audio_format.audio_type))
+			{
+				GST_DEBUG_OBJECT(element, "using default latency query logic for encoded audio");
+				ret = GST_ELEMENT_CLASS(gst_pw_audio_sink_parent_class)->query(element, query);
+				break;
+			}
 
 			ret = gst_base_sink_query_latency(
 				GST_BASE_SINK_CAST(element),
@@ -1382,14 +1404,25 @@ static GstCaps* gst_pw_audio_sink_fixate(GstBaseSink *basesink, GstCaps *caps)
 }
 
 
-static void gst_pw_audio_sink_get_times(G_GNUC_UNUSED GstBaseSink *basesink, G_GNUC_UNUSED GstBuffer *buffer, GstClockTime *start, GstClockTime *end)
+static void gst_pw_audio_sink_get_times(GstBaseSink *basesink, GstBuffer *buffer, GstClockTime *start, GstClockTime *end)
 {
-	/* This sink handles the clock synchronization by itself. Setting
-	 * *start and *end to GST_CLOCK_TIME_NONE informs the base class
-	 * that it must not handle the synchronization on its own. */
+	GstPwAudioSink *self = GST_PW_AUDIO_SINK_CAST(basesink);
 
-	*start = GST_CLOCK_TIME_NONE;
-	*end = GST_CLOCK_TIME_NONE;
+	if (gst_pw_audio_format_data_is_raw(self->pw_audio_format.audio_type))
+	{
+		/* This sink handles the clock synchronization by itself when playing raw
+		 * audio. Setting *start and *end to GST_CLOCK_TIME_NONE informs the base
+		 * class that it must not handle the synchronization on its own. */
+
+		*start = GST_CLOCK_TIME_NONE;
+		*end = GST_CLOCK_TIME_NONE;
+	}
+	else
+	{
+		/* For encoded audio, the basesink's default synchronization is
+		 * good enough, so just use that; don't bother using a custom one. */
+		GST_BASE_SINK_CLASS(gst_pw_audio_sink_parent_class)->get_times(basesink, buffer, start, end);
+	}
 }
 
 
@@ -1475,7 +1508,7 @@ static gboolean gst_pw_audio_sink_start(GstBaseSink *basesink)
 	if (self->stream_properties != NULL)
 	{
 		gst_structure_foreach(self->stream_properties, copy_stream_properties_to_pw_props, pw_props);
-		GST_DEBUG_OBJECT(self, "extra propertie for the new PipeWire stream: %" GST_PTR_FORMAT, (gpointer)(self->stream_properties));
+		GST_DEBUG_OBJECT(self, "extra properties for the new PipeWire stream: %" GST_PTR_FORMAT, (gpointer)(self->stream_properties));
 	}
 
 	/* Reuse the node name as the stream name. We copy the string here
@@ -1547,6 +1580,7 @@ static gboolean gst_pw_audio_sink_stop(GstBaseSink *basesink)
 	self->flushing = 0;
 	self->paused = 0;
 	self->latency = 0;
+	self->accum_excess_encaudio_playtime = 0;
 	self->stream_clock_is_pipeline_clock = FALSE;
 	self->stream_listener_added = FALSE;
 	self->spa_position = NULL;
@@ -2124,8 +2158,43 @@ finish:
 
 static GstFlowReturn gst_pw_audio_sink_render_encoded(GstPwAudioSink *self, GstBuffer *original_incoming_buffer)
 {
-	// TODO
-	return GST_FLOW_OK;
+	GstFlowReturn flow_ret = GST_FLOW_OK;
+
+	GST_LOG_OBJECT(self, "incoming buffer: %" GST_PTR_FORMAT, (gpointer)original_incoming_buffer);
+	// TODO: if the current quantum length is larger than the frame length, request a smaller quantum;
+	// otherwise, we'll eventually get an underrun in the PW sink
+
+	LOCK_AUDIO_DATA_BUFFER_MUTEX(self);
+
+	while (TRUE)
+	{
+		guint num_queued_frames;
+
+		if (g_atomic_int_get(&(self->flushing)))
+		{
+			GST_DEBUG_OBJECT(self, "exiting loop in render function since we are flushing");
+			flow_ret = GST_FLOW_FLUSHING;
+			goto finish;
+		}
+
+		num_queued_frames = gst_queue_array_get_length(self->encoded_data_queue);
+
+		if (num_queued_frames < MAX_ENCODED_DATA_QUEUE_LENGTH)
+		{
+			GST_LOG_OBJECT(self, "encoded data queue has room for buffer; pushing");
+			gst_queue_array_push_tail(self->encoded_data_queue, gst_buffer_ref(original_incoming_buffer));
+			goto finish;
+		}
+		else
+		{
+			GST_LOG_OBJECT(self, "encoded data queue has no room for buffer; waiting");
+			g_cond_wait(&(self->audio_data_buffer_cond), &(self->audio_data_buffer_mutex));
+		}
+	}
+
+finish:
+	UNLOCK_AUDIO_DATA_BUFFER_MUTEX(self);
+	return flow_ret;
 }
 
 
@@ -2282,8 +2351,14 @@ static void gst_pw_audio_sink_activate_stream_unlocked(GstPwAudioSink *self, gbo
 static void gst_pw_audio_sink_setup_audio_data_buffer(GstPwAudioSink *self)
 {
 	if (gst_pw_audio_format_data_is_raw(self->pw_audio_format.audio_type))
+	{
 		self->ring_buffer = gst_pw_audio_ring_buffer_new(&(self->pw_audio_format), self->ring_buffer_length_snapshot);
-	/* TODO: create data structure for encoded data */
+	}
+	else
+	{
+		self->encoded_data_queue = gst_queue_array_new(0);
+		gst_queue_array_set_clear_func(self->encoded_data_queue, gst_buffer_unref);
+	}
 }
 
 
@@ -2295,7 +2370,11 @@ static void gst_pw_audio_sink_teardown_audio_data_buffer(GstPwAudioSink *self)
 		self->ring_buffer = NULL;
 	}
 
-	/* TODO: destroy data structure for encoded data */
+	if (self->encoded_data_queue != NULL)
+	{
+		gst_queue_array_free(self->encoded_data_queue);
+		self->encoded_data_queue = NULL;
+	}
 }
 
 
@@ -2305,6 +2384,8 @@ static void gst_pw_audio_sink_reset_audio_data_buffer_unlocked(GstPwAudioSink *s
 
 	if (self->ring_buffer != NULL)
 		gst_pw_audio_ring_buffer_flush(self->ring_buffer);
+
+	self->accum_excess_encaudio_playtime = 0;
 
 	/* Also reset these states, since a queue reset effectively ends
 	 * any synchronized playback of the stream that was going on earlier,
@@ -2344,38 +2425,69 @@ static void gst_pw_audio_sink_drain_stream_and_audio_data_buffer(GstPwAudioSink 
 		return;
 
 	/* locking the audio data buffer mutex to wait until the process
-	 * callback signals that the fill level can be (re-)checked.
-	 * We do that until the fill level is zero (= buffer is empty). */
+	 * callback signals that the fill level / queue length can be
+	 * (re-)checked. We do that until the fill level is zero
+	 * (= buffer is empty) in raw audio and until the queue is
+	 * empty in encoded audio. */
 	LOCK_AUDIO_DATA_BUFFER_MUTEX(self);
 
-	while (TRUE)
+	if (gst_pw_audio_format_data_is_raw(self->pw_audio_format.audio_type))
 	{
-		GstClockTime current_fill_level;
-
-		if (g_atomic_int_get(&(self->flushing)))
+		while (TRUE)
 		{
-			GST_DEBUG_OBJECT(self, "aborting drain since we are flushing");
-			break;
+			GstClockTime current_fill_level;
+
+			if (g_atomic_int_get(&(self->flushing)))
+			{
+				GST_DEBUG_OBJECT(self, "aborting drain since we are flushing");
+				break;
+			}
+
+			current_fill_level = gst_pw_audio_ring_buffer_get_current_fill_level(self->ring_buffer);
+
+			if (current_fill_level == 0)
+			{
+				GST_DEBUG_OBJECT(self, "audio data buffer is fully drained");
+				break;
+			}
+			else
+			{
+				GST_DEBUG_OBJECT(self, "audio data buffer still contains data; current audio data buffer fill level: %" GST_TIME_FORMAT, GST_TIME_ARGS(current_fill_level));
+				g_cond_wait(&(self->audio_data_buffer_cond), &(self->audio_data_buffer_mutex));
+			}
 		}
-
-		// TODO calculations are hardcoded to use ring buffer length; be more flexible
-		// to allow for encoded audio as well
-
-		current_fill_level = gst_pw_audio_ring_buffer_get_current_fill_level(self->ring_buffer);
-
-		if (current_fill_level == 0)
+	}
+	else
+	{
+		while (TRUE)
 		{
-			GST_DEBUG_OBJECT(self, "audio data buffer is fully drained");
-			break;
-		}
-		else
-		{
-			GST_DEBUG_OBJECT(self, "audio data buffer still contains data; current audio data buffer fill level: %" GST_TIME_FORMAT, GST_TIME_ARGS(current_fill_level));
-			g_cond_wait(&(self->audio_data_buffer_cond), &(self->audio_data_buffer_mutex));
+			guint num_queued_frames;
+
+			if (g_atomic_int_get(&(self->flushing)))
+			{
+				GST_DEBUG_OBJECT(self, "aborting drain since we are flushing");
+				break;
+			}
+
+			num_queued_frames = gst_queue_array_get_length(self->encoded_data_queue);
+
+			if (num_queued_frames == 0)
+			{
+				GST_DEBUG_OBJECT(self, "encoded data queue is fully drained");
+				break;
+			}
+			else
+			{
+				GST_DEBUG_OBJECT(self, "encoded data queue still contains data; number of queued frames: %u", num_queued_frames);
+				g_cond_wait(&(self->audio_data_buffer_cond), &(self->audio_data_buffer_mutex));
+			}
 		}
 	}
 
 	UNLOCK_AUDIO_DATA_BUFFER_MUTEX(self);
+
+	/* Now that the audio data buffer is empty, the next
+	 * step is to drain the PipeWire stream itself. */
 
 	pw_thread_loop_lock(self->pipewire_core->loop);
 	gst_pw_audio_sink_drain_stream_unlocked(self);
@@ -2924,5 +3036,98 @@ finish:
 
 static void gst_pw_audio_sink_encoded_on_process_stream(void *data)
 {
-	// TODO
+	GstPwAudioSink *self = GST_PW_AUDIO_SINK_CAST(data);
+	struct pw_time stream_time;
+	struct pw_buffer *pw_buf;
+	struct spa_data *inner_spa_data;
+	GstBuffer *frame;
+
+	GST_LOG_OBJECT(self, COLOR_GREEN "new PipeWire graph tick" COLOR_DEFAULT);
+
+	pw_stream_get_time_n(self->stream, &stream_time, sizeof(stream_time));
+
+	gst_pw_stream_clock_add_observation(self->stream_clock, &stream_time);
+
+	pw_buf = pw_stream_dequeue_buffer(self->stream);
+	if (G_UNLIKELY(pw_buf == NULL))
+	{
+		GST_WARNING_OBJECT(self, "there are no PipeWire buffers to dequeue; cannot process anything");
+		return;
+	}
+
+	g_assert(pw_buf->buffer != NULL);
+
+	if (G_UNLIKELY(pw_buf->buffer->n_datas == 0))
+	{
+		GST_WARNING_OBJECT(self, "dequeued PipeWire buffer has no data");
+		goto finish;
+	}
+
+	inner_spa_data = &(pw_buf->buffer->datas[0]);
+	if (G_UNLIKELY(inner_spa_data->data == NULL))
+	{
+		GST_WARNING_OBJECT(self, "dequeued PipeWire buffer has no mapped data pointer");
+		goto finish;
+	}
+
+	LOCK_AUDIO_DATA_BUFFER_MUTEX(self);
+
+	if (self->accum_excess_encaudio_playtime >= self->quantum_size_in_ns)
+	{
+		GST_LOG_OBJECT(self, "producing null frame to compensate excess playtime");
+		frame = NULL;
+		self->accum_excess_encaudio_playtime -= self->quantum_size_in_ns;
+	}
+	else
+	{
+		if (gst_queue_array_get_length(self->encoded_data_queue) > 0)
+		{
+			frame = gst_queue_array_pop_head(self->encoded_data_queue);
+			GST_LOG_OBJECT(self, "got frame from encoded data queue");
+		}
+		else
+		{
+			GST_WARNING_OBJECT(self, "attempted to get data from queue but it is empty; producing null frame");
+			frame = NULL;
+		}
+	}
+
+	if (frame != NULL)
+	{
+		GstClockTime frame_duration;
+		GstMapInfo map_info;
+
+		gst_buffer_map(frame, &map_info, GST_MAP_READ);
+
+		inner_spa_data->chunk->offset = 0;
+		inner_spa_data->chunk->stride = 1;
+		inner_spa_data->chunk->size = map_info.size;
+
+		memcpy(inner_spa_data->data, map_info.data, map_info.size);
+
+		gst_buffer_unmap(frame, &map_info);
+
+		frame_duration = GST_BUFFER_DURATION(frame);
+
+		if (frame_duration > self->quantum_size_in_ns)
+		{
+			GstClockTime excess_playtime = frame_duration - self->quantum_size_in_ns;
+			self->accum_excess_encaudio_playtime += excess_playtime;
+		}
+	}
+	else
+	{
+		inner_spa_data->chunk->offset = 0;
+		inner_spa_data->chunk->stride = 0;
+		inner_spa_data->chunk->size = 0;
+		pw_buf->size = 0;
+	}
+
+	UNLOCK_AUDIO_DATA_BUFFER_MUTEX(self);
+
+	if (frame != NULL)
+		gst_buffer_unref(frame);
+
+finish:
+	pw_stream_queue_buffer(self->stream, pw_buf);
 }
