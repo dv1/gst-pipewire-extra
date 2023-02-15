@@ -183,58 +183,6 @@ static GstPipewireAudioTypeDetails const audio_type_details[GST_NUM_PIPEWIRE_AUD
 			"mpegversion = (int) 1, " \
 			"mpegaudioversion = (int) [ 1, 3 ]",
 		.is_raw = FALSE
-	},
-
-	/* AC3 */
-	{
-		.name = "AC3",
-		.template_caps_string = \
-			"audio/x-ac3, " \
-			"framed = (boolean) true, " \
-			"alignment = (string) frame, " \
-			"rate = (int) [ 1, MAX ], " \
-			"channels = (int) [ 1, MAX ]",
-		.is_raw = FALSE
-	},
-
-	/* EAC3 */
-	{
-		.name = "EAC3",
-		.template_caps_string = \
-			"audio/x-eac3, " \
-			"framed = (boolean) true, " \
-			"alignment = (string) frame, " \
-			"rate = (int) [ 1, MAX ], " \
-			"channels = (int) [ 1, MAX ]",
-		.is_raw = FALSE
-	},
-
-	/* TrueHD */
-	{
-		.name = "TrueHD",
-		.template_caps_string = "audio/x-true-hd",
-		.is_raw = FALSE
-	},
-
-	/* DTS */
-	{
-		.name = "DTS",
-		.template_caps_string = "audio/x-dts",
-		.is_raw = FALSE
-	},
-
-	/* DTS-HD */
-	{
-		.name = "DTS-HD",
-		.template_caps_string = "audio/x-dts",
-		.is_raw = FALSE
-	},
-
-	/* MHAS */
-	{
-		.name = "MPEG-H audio stream",
-		.template_caps_string = "audio/x-mhas",
-		.is_raw = FALSE
 	}
 };
 
