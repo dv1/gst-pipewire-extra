@@ -40,7 +40,7 @@ typedef enum
 {
 	GST_PIPEWIRE_AUDIO_TYPE_PCM = 0,
 	GST_PIPEWIRE_AUDIO_TYPE_DSD,
-	GST_PIPEWIRE_AUDIO_TYPE_MPEG,
+	GST_PIPEWIRE_AUDIO_TYPE_MP3,
 	/* TODO: More types */
 
 	GST_NUM_PIPEWIRE_AUDIO_TYPES
@@ -108,12 +108,20 @@ GstPipewireDsdInfo;
 
 typedef struct
 {
+	gint rate;
+	gint channels;
+}
+GstPipewireEncodedAudioInfo;
+
+typedef struct
+{
 	GstPipewireAudioType audio_type;
 
 	union
 	{
 		GstAudioInfo pcm_audio_info;
 		GstPipewireDsdInfo dsd_audio_info;
+		GstPipewireEncodedAudioInfo encoded_audio_info;
 	} info;
 }
 GstPwAudioFormat;

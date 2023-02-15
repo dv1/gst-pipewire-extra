@@ -174,14 +174,16 @@ static GstPipewireAudioTypeDetails const audio_type_details[GST_NUM_PIPEWIRE_AUD
 		.is_raw = TRUE
 	},
 
-	/* MPEG */
+	/* MP3 */
 	{
-		.name = "MPEG",
+		.name = "MP3",
 		.template_caps_string = \
 			"audio/mpeg, " \
 			"parsed = (boolean) true, " \
 			"mpegversion = (int) 1, " \
-			"mpegaudioversion = (int) [ 1, 3 ]",
+			"layer = (int) 3, " \
+			"rate = (int) [ 1, MAX ], " \
+			"channels = (int) [ 1, MAX ]",
 		.is_raw = FALSE
 	}
 };
@@ -651,6 +653,36 @@ gboolean gst_pw_audio_format_from_caps(GstPwAudioFormat *pw_audio_format, GstObj
 
 		pw_audio_format->audio_type = GST_PIPEWIRE_AUDIO_TYPE_DSD;
 	}
+	else if (g_strcmp0(media_type, "audio/mpeg") == 0)
+	{
+		GstPipewireEncodedAudioInfo *encoded_audio_info = &(pw_audio_format->info.encoded_audio_info);
+
+		if (!gst_structure_get_int(fmt_structure, "rate", &(encoded_audio_info->rate)))
+		{
+			GST_ERROR_OBJECT(parent, "caps have no rate field; caps: %" GST_PTR_FORMAT, (gpointer)caps);
+			goto error;
+		}
+
+		if (encoded_audio_info->rate < 1)
+		{
+			GST_ERROR_OBJECT(parent, "caps have invalid rate field; caps: %" GST_PTR_FORMAT, (gpointer)caps);
+			goto error;
+		}
+
+		if (!gst_structure_get_int(fmt_structure, "channels", &(encoded_audio_info->channels)))
+		{
+			GST_ERROR_OBJECT(parent, "caps have no channels field; caps: %" GST_PTR_FORMAT, (gpointer)caps);
+			goto error;
+		}
+
+		if (encoded_audio_info->channels < 1)
+		{
+			GST_ERROR_OBJECT(parent, "caps have invalid channels field; caps: %" GST_PTR_FORMAT, (gpointer)caps);
+			goto error;
+		}
+
+		pw_audio_format->audio_type = GST_PIPEWIRE_AUDIO_TYPE_MP3;
+	}
 	// TODO: Add code for more non-PCM types here
 	else
 	{
@@ -822,6 +854,18 @@ gboolean gst_pw_audio_format_to_spa_pod(
 			break;
 		}
 
+		case GST_PIPEWIRE_AUDIO_TYPE_MP3:
+		{
+			struct spa_audio_info_mp3 mp3_info = {
+				.rate = pw_audio_format->info.encoded_audio_info.rate,
+				.channels = pw_audio_format->info.encoded_audio_info.channels
+			};
+
+			*pod = spa_format_audio_mp3_build(&builder, SPA_PARAM_EnumFormat, &mp3_info);
+
+			break;
+		}
+
 		// TODO: Add code for more non-PCM types here
 
 		default:
@@ -951,6 +995,22 @@ gboolean gst_pw_audio_format_from_spa_pod_with_format_param(
 			break;
 		}
 
+		case SPA_MEDIA_SUBTYPE_mp3:
+		{
+			if (spa_format_audio_mp3_parse(format_param_pod, &(info.info.mp3)) < 0)
+			{
+				GST_ERROR_OBJECT(parent, "could not parse MP3 format: %s (%d)", wrapped_spa_strerror(err), -err);
+				goto error;
+			}
+
+			pw_audio_format->info.encoded_audio_info.rate = info.info.mp3.rate;
+			pw_audio_format->info.encoded_audio_info.channels = info.info.mp3.channels;
+
+			pw_audio_format->audio_type = GST_PIPEWIRE_AUDIO_TYPE_MP3;
+
+			break;
+		}
+
 		default:
 			GST_ERROR_OBJECT(parent, "unsupported SPA media subtype %#010" G_GINT32_MODIFIER "x", (guint32)(info.media_subtype));
 			goto error;
@@ -1010,7 +1070,6 @@ gboolean gst_pw_audio_format_build_spa_pod_for_probing(
 			);
 			break;
 
-#if PW_CHECK_VERSION(0, 3, 37)
 		case GST_PIPEWIRE_AUDIO_TYPE_DSD:
 			*pod = spa_format_audio_dsd_build(
 				&builder, SPA_PARAM_EnumFormat,
@@ -1022,7 +1081,20 @@ gboolean gst_pw_audio_format_build_spa_pod_for_probing(
 				)
 			);
 			break;
-#endif
+
+		case GST_PIPEWIRE_AUDIO_TYPE_MP3:
+			*pod = spa_format_audio_mp3_build(
+				&builder, SPA_PARAM_EnumFormat,
+				&SPA_AUDIO_INFO_MP3_INIT(
+					/* Use 44.1 kHz stereo as formats to probe for. We really
+					 * just want to know if MP3 is supported at all, so these
+					 * are picked as safe defaults - any device capable of
+					 * playing MP3 must be able to handle this. */
+					.channels = 2,
+					.rate = 44100
+				)
+			);
+			break;
 
 		default:
 			return FALSE;
@@ -1070,6 +1142,10 @@ gsize gst_pw_audio_format_get_stride(GstPwAudioFormat const *pw_audio_format)
 
 		case GST_PIPEWIRE_AUDIO_TYPE_DSD:
 			return pw_audio_format->info.dsd_audio_info.channels * gst_pipewire_dsd_format_get_width(pw_audio_format->info.dsd_audio_info.format);
+
+		/* Stride has no real meaning in encoded audio. Just use 1 byte as stride. */
+		case GST_PIPEWIRE_AUDIO_TYPE_MP3:
+			return 1;
 
 		// TODO: Add code for more non-PCM types here
 
@@ -1122,6 +1198,15 @@ gchar* gst_pw_audio_format_to_string(GstPwAudioFormat const *pw_audio_format)
 			);
 		}
 
+		case GST_PIPEWIRE_AUDIO_TYPE_MP3:
+		{
+			return gst_info_strdup_printf(
+				"MP3: rate %d channels %d",
+				pw_audio_format->info.encoded_audio_info.rate,
+				pw_audio_format->info.encoded_audio_info.channels
+			);
+		}
+
 		// TODO: Add code for more non-PCM types here
 
 		default:
@@ -1162,6 +1247,12 @@ gsize gst_pw_audio_format_calculate_num_frames_from_duration(GstPwAudioFormat co
 			return gst_util_uint64_scale_int(duration, info->rate, GST_SECOND);
 		}
 
+		case GST_PIPEWIRE_AUDIO_TYPE_MP3:
+		{
+			GstPipewireEncodedAudioInfo const *info = &(pw_audio_format->info.encoded_audio_info);
+			return gst_util_uint64_scale_int(duration, info->rate, GST_SECOND);
+		}
+
 		// TODO: Add code for more non-PCM types here
 
 		default:
@@ -1196,6 +1287,12 @@ GstClockTime gst_pw_audio_format_calculate_duration_from_num_frames(GstPwAudioFo
 		case GST_PIPEWIRE_AUDIO_TYPE_DSD:
 		{
 			GstPipewireDsdInfo const *info = &(pw_audio_format->info.dsd_audio_info);
+			return gst_util_uint64_scale_int(num_frames, GST_SECOND, info->rate);
+		}
+
+		case GST_PIPEWIRE_AUDIO_TYPE_MP3:
+		{
+			GstPipewireEncodedAudioInfo const *info = &(pw_audio_format->info.encoded_audio_info);
 			return gst_util_uint64_scale_int(num_frames, GST_SECOND, info->rate);
 		}
 
@@ -1249,8 +1346,6 @@ void gst_pw_audio_format_write_silence_frames(GstPwAudioFormat const *pw_audio_f
 			memset(dest_frames, 0x69, num_silence_bytes);
 			break;
 		}
-
-		// TODO: Add code for more non-PCM types here
 
 		default:
 			break;
