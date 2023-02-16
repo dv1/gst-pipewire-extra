@@ -77,6 +77,7 @@ enum
 	PROP_STREAM_PROPERTIES,
 	PROP_SOCKET_FD,
 	PROP_RING_BUFFER_LENGTH,
+	PROP_MAX_ENCODED_DATA_QUEUE_LENGTH,
 	PROP_APP_NAME,
 	PROP_NODE_NAME,
 	PROP_NODE_DESCRIPTION,
@@ -93,6 +94,7 @@ enum
 #define DEFAULT_STREAM_PROPERTIES NULL
 #define DEFAULT_SOCKET_FD (-1)
 #define DEFAULT_RING_BUFFER_LENGTH 100
+#define DEFAULT_MAX_ENCODED_DATA_QUEUE_LENGTH 2
 #define DEFAULT_APP_NAME NULL
 #define DEFAULT_NODE_NAME NULL
 #define DEFAULT_NODE_DESCRIPTION NULL
@@ -103,9 +105,6 @@ enum
 
 #define LOCK_LATENCY_MUTEX(pw_audio_sink) g_mutex_lock(&((pw_audio_sink)->latency_mutex))
 #define UNLOCK_LATENCY_MUTEX(pw_audio_sink) g_mutex_unlock(&((pw_audio_sink)->latency_mutex))
-
-// TODO: Make this configurable
-#define MAX_ENCODED_DATA_QUEUE_LENGTH 2
 
 /* Factors for the PI controller. Empirically picked. */
 #define PI_CONTROLLER_KI_FACTOR 0.01
@@ -130,6 +129,7 @@ struct _GstPwAudioSink
 	GstStructure *stream_properties;
 	int socket_fd;
 	guint ring_buffer_length_in_ms;
+	guint max_encoded_data_queue_length;
 	gchar *app_name;
 	gchar *node_name;
 	gchar *node_description;
@@ -264,12 +264,13 @@ struct _GstPwAudioSink
 	 * to detect these discontinuities and resynchronize playback when they happen. */
 	guint64 last_pw_time_ticks;
 	gboolean last_pw_time_ticks_set;
-	/* Snapshot of skew_threshold, done in gst_pw_audio_sink_start().
-	 * This is done to prevent potential race conditions if the user
-	 * changes the skew threshold property while it is being read.
-	 * Having this copy eliminates the need for a mutex lock. */
+	/* Snapshot of GObject property values, done in gst_pw_audio_sink_start().
+	 * This is done to prevent potential race conditions if the user changes
+	 * these properties while they are being read. Making these copies
+	 * eliminates the need for a mutex lock. */
 	GstClockTimeDiff skew_threshold_snapshot;
 	GstClockTime ring_buffer_length_snapshot;
+	guint max_encoded_data_queue_length_snapshot;
 };
 
 
@@ -508,6 +509,19 @@ static void gst_pw_audio_sink_class_init(GstPwAudioSinkClass *klass)
 
 	g_object_class_install_property(
 		object_class,
+		PROP_MAX_ENCODED_DATA_QUEUE_LENGTH,
+		g_param_spec_uint(
+			"max-encoded-data-queue-length",
+			"Maximum encoded data queue length",
+			"How many buffers with encoded data frames can be queued at most before upstream is blocked",
+			1, G_MAXUINT,
+			DEFAULT_MAX_ENCODED_DATA_QUEUE_LENGTH,
+			(GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)
+		)
+	);
+
+	g_object_class_install_property(
+		object_class,
 		PROP_APP_NAME,
 		g_param_spec_string(
 			"app-name",
@@ -572,6 +586,7 @@ static void gst_pw_audio_sink_init(GstPwAudioSink *self)
 	self->stream_properties = DEFAULT_STREAM_PROPERTIES;
 	self->socket_fd = DEFAULT_SOCKET_FD;
 	self->ring_buffer_length_in_ms = DEFAULT_RING_BUFFER_LENGTH;
+	self->max_encoded_data_queue_length = DEFAULT_MAX_ENCODED_DATA_QUEUE_LENGTH;
 	self->app_name = g_strdup(DEFAULT_APP_NAME);
 	self->node_name = g_strdup(DEFAULT_NODE_NAME);
 	self->node_description = g_strdup(DEFAULT_NODE_DESCRIPTION);
@@ -715,6 +730,12 @@ static void gst_pw_audio_sink_set_property(GObject *object, guint prop_id, GValu
 			GST_OBJECT_UNLOCK(self);
 			break;
 
+		case PROP_MAX_ENCODED_DATA_QUEUE_LENGTH:
+			GST_OBJECT_LOCK(self);
+			self->max_encoded_data_queue_length = g_value_get_uint(value);
+			GST_OBJECT_UNLOCK(self);
+			break;
+
 		case PROP_APP_NAME:
 			GST_OBJECT_LOCK(self);
 			g_free(self->app_name);
@@ -792,6 +813,12 @@ static void gst_pw_audio_sink_get_property(GObject *object, guint prop_id, GValu
 		case PROP_RING_BUFFER_LENGTH:
 			GST_OBJECT_LOCK(self);
 			g_value_set_uint(value, self->ring_buffer_length_in_ms);
+			GST_OBJECT_UNLOCK(self);
+			break;
+
+		case PROP_MAX_ENCODED_DATA_QUEUE_LENGTH:
+			GST_OBJECT_LOCK(self);
+			g_value_set_uint(value, self->max_encoded_data_queue_length);
 			GST_OBJECT_UNLOCK(self);
 			break;
 
@@ -1465,6 +1492,7 @@ static gboolean gst_pw_audio_sink_start(GstBaseSink *basesink)
 	socket_fd = self->socket_fd;
 	self->skew_threshold_snapshot = self->skew_threshold;
 	self->ring_buffer_length_snapshot = self->ring_buffer_length_in_ms * GST_MSECOND;
+	self->max_encoded_data_queue_length_snapshot = self->max_encoded_data_queue_length;
 
 	self->pipewire_core = gst_pipewire_core_get(socket_fd);
 	g_assert(self->pipewire_core != NULL);
@@ -1598,6 +1626,7 @@ static gboolean gst_pw_audio_sink_stop(GstBaseSink *basesink)
 	self->last_pw_time_ticks = 0;
 	self->last_pw_time_ticks_set = FALSE;
 	self->skew_threshold_snapshot = 0;
+	self->max_encoded_data_queue_length_snapshot = 0;
 
 	return TRUE;
 }
@@ -2185,15 +2214,24 @@ static GstFlowReturn gst_pw_audio_sink_render_encoded(GstPwAudioSink *self, GstB
 
 		num_queued_frames = gst_queue_array_get_length(self->encoded_data_queue);
 
-		if (num_queued_frames < MAX_ENCODED_DATA_QUEUE_LENGTH)
+		if (num_queued_frames < self->max_encoded_data_queue_length_snapshot)
 		{
-			GST_LOG_OBJECT(self, "encoded data queue has room for buffer; pushing");
+			GST_LOG_OBJECT(
+				self,
+				"encoded data queue has room for another frame (%u queued, limit is %u); pushing",
+				num_queued_frames,
+				self->max_encoded_data_queue_length_snapshot
+			);
 			gst_queue_array_push_tail(self->encoded_data_queue, gst_buffer_ref(original_incoming_buffer));
 			goto finish;
 		}
 		else
 		{
-			GST_LOG_OBJECT(self, "encoded data queue has no room for buffer; waiting");
+			GST_LOG_OBJECT(
+				self,
+				"encoded data queue has no room for frame (queue limit is %u frame(s)); waiting",
+				self->max_encoded_data_queue_length_snapshot
+			);
 			g_cond_wait(&(self->audio_data_buffer_cond), &(self->audio_data_buffer_mutex));
 		}
 	}
