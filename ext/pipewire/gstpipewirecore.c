@@ -149,7 +149,7 @@ static void gst_pipewire_core_on_core_error(void *object, uint32_t id, int seque
 	{
 		GST_DEBUG_OBJECT(
 			self,
-			"PipeWire core got notified about a missing node error; most likely there is no node link the stream to;  id: %" PRIu32 "  sequence_number: %d  message: \"%s\"",
+			"PipeWire core got notified about a missing node error; most likely there is no node to link the stream to;  id: %" PRIu32 "  sequence_number: %d  message: \"%s\"",
 			id,
 			sequence_number,
 			message

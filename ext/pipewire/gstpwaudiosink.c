@@ -29,19 +29,25 @@
  * during pause is done in render() etc. */
 
 #include <gst/gst.h>
+/* Turn off -Wdeprecated-declarations to mask the "g_memdup is deprecated"
+ * warning (originating in gst/base/gstbytereader.h) that is present in
+ * many GStreamer installations. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #include <gst/base/base.h>
+#pragma GCC diagnostic pop
 #include <gst/audio/audio.h>
 
 #include <stdint.h>
 #include <string.h>
 
+/* Turn off -pedantic to mask the "ISO C forbids braced-groups within expressions"
+ * warnings that occur because PipeWire uses such braced-groups extensively. */
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wpedantic"
-
 #include <pipewire/pipewire.h>
 #include <spa/node/io.h>
 #include <spa/utils/result.h>
-
 #pragma GCC diagnostic pop
 
 #include "gstpipewirecore.h"
@@ -2357,7 +2363,7 @@ static void gst_pw_audio_sink_setup_audio_data_buffer(GstPwAudioSink *self)
 	else
 	{
 		self->encoded_data_queue = gst_queue_array_new(0);
-		gst_queue_array_set_clear_func(self->encoded_data_queue, gst_buffer_unref);
+		gst_queue_array_set_clear_func(self->encoded_data_queue, (GDestroyNotify)gst_buffer_unref);
 	}
 }
 
@@ -3074,7 +3080,7 @@ static void gst_pw_audio_sink_encoded_on_process_stream(void *data)
 
 	if (self->accum_excess_encaudio_playtime >= self->quantum_size_in_ns)
 	{
-		GST_LOG_OBJECT(self, "producing null frame to compensate excess playtime");
+		GST_LOG_OBJECT(self, "producing null frame to compensate for excess playtime");
 		frame = NULL;
 		self->accum_excess_encaudio_playtime -= self->quantum_size_in_ns;
 	}
