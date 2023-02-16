@@ -162,7 +162,7 @@ static GstClockTime gst_pw_stream_clock_get_current_monotonic_time(G_GNUC_UNUSED
 
 	struct timespec ts;
 	clock_gettime(CLOCK_MONOTONIC, &ts);
-	return (GstClockTime)(ts.tv_sec) * GST_SECOND + (GstClockTime)(ts.tv_nsec);
+	return GST_TIMESPEC_TO_TIME(ts);
 }
 
 
