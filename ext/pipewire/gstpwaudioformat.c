@@ -78,6 +78,7 @@
 #pragma GCC diagnostic ignored "-Wpedantic"
 
 #include <spa/param/audio/format-utils.h>
+#include <spa/param/audio/aac.h>
 #include <spa/pod/pod.h>
 #include <spa/utils/result.h>
 
@@ -185,7 +186,20 @@ static GstPipewireAudioTypeDetails const audio_type_details[GST_NUM_PIPEWIRE_AUD
 			"rate = (int) [ 1, MAX ], " \
 			"channels = (int) [ 1, MAX ]",
 		.is_raw = FALSE
-	}
+	},
+
+	/* AAC */
+	{
+		.name = "AAC",
+		.template_caps_string = \
+			"audio/mpeg, " \
+			"framed = (boolean) true, " \
+			"mpegversion = (int) { 2, 4 }, " \
+			"stream-format = (string) { raw, adts, adif, loas }, " \
+			"rate = (int) [ 1, MAX ], " \
+			"channels = (int) [ 1, MAX ]",
+		.is_raw = FALSE
+	},
 };
 
 
@@ -277,6 +291,22 @@ static void gst_to_spa_channel_positions(GstAudioChannelPosition const *gst_chan
 			default:
 				spa_channel_positions[channel_nr] = SPA_AUDIO_CHANNEL_UNKNOWN;
 		}
+	}
+}
+
+
+static gchar const * spa_aac_stream_format_to_string(enum spa_audio_aac_stream_format stream_format)
+{
+	switch (stream_format)
+	{
+		case SPA_AUDIO_AAC_STREAM_FORMAT_RAW: return "raw AAC frames";
+		case SPA_AUDIO_AAC_STREAM_FORMAT_MP2ADTS: return "ISO/IEC 13818-7 MPEG-2 Audio Data Transport Stream (ADTS)";
+		case SPA_AUDIO_AAC_STREAM_FORMAT_MP4ADTS: return "ISO/IEC 14496-3 MPEG-4 Audio Data Transport Stream (ADTS)";
+		case SPA_AUDIO_AAC_STREAM_FORMAT_MP4LOAS: return "ISO/IEC 14496-3 Low Overhead Audio Stream (LOAS)";
+		case SPA_AUDIO_AAC_STREAM_FORMAT_MP4LATM: return "ISO/IEC 14496-3 Low Overhead Audio Transport Multiplex (LATM)";
+		case SPA_AUDIO_AAC_STREAM_FORMAT_ADIF: return "ISO/IEC 14496-3 Audio Data Interchange Format (ADIF)";
+		case SPA_AUDIO_AAC_STREAM_FORMAT_MP4FF: return "ISO/IEC 14496-12 MPEG-4 file format";
+		default: return "<unknown>";
 	}
 }
 
@@ -655,7 +685,14 @@ gboolean gst_pw_audio_format_from_caps(GstPwAudioFormat *pw_audio_format, GstObj
 	}
 	else if (g_strcmp0(media_type, "audio/mpeg") == 0)
 	{
+		gint mpegversion;
 		GstPipewireEncodedAudioInfo *encoded_audio_info = &(pw_audio_format->info.encoded_audio_info);
+
+		if (!gst_structure_get_int(fmt_structure, "mpegversion", &mpegversion))
+		{
+			GST_ERROR_OBJECT(parent, "caps have no mpegversion field; caps: %" GST_PTR_FORMAT, (gpointer)caps);
+			goto error;
+		}
 
 		if (!gst_structure_get_int(fmt_structure, "rate", &(encoded_audio_info->rate)))
 		{
@@ -681,7 +718,45 @@ gboolean gst_pw_audio_format_from_caps(GstPwAudioFormat *pw_audio_format, GstObj
 			goto error;
 		}
 
-		pw_audio_format->audio_type = GST_PIPEWIRE_AUDIO_TYPE_MP3;
+		switch (mpegversion)
+		{
+			case 1:
+				pw_audio_format->audio_type = GST_PIPEWIRE_AUDIO_TYPE_MP3;
+				break;
+
+			case 2:
+			case 4:
+			{
+				gchar const *stream_format_str = gst_structure_get_string(fmt_structure, "stream-format");
+				if (stream_format_str == NULL)
+				{
+					GST_ERROR_OBJECT(parent, "caps describe AAC content, but stream-format field is missing; caps: %" GST_PTR_FORMAT, (gpointer)caps);
+					goto error;
+				}
+
+				if (g_strcmp0(stream_format_str, "raw") == 0)
+					encoded_audio_info->details.aac.stream_format = SPA_AUDIO_AAC_STREAM_FORMAT_RAW;
+				else if (g_strcmp0(stream_format_str, "adts") == 0)
+					encoded_audio_info->details.aac.stream_format = (mpegversion == 2) ? SPA_AUDIO_AAC_STREAM_FORMAT_MP2ADTS : SPA_AUDIO_AAC_STREAM_FORMAT_MP4ADTS;
+				else if (g_strcmp0(stream_format_str, "adif") == 0)
+					encoded_audio_info->details.aac.stream_format = SPA_AUDIO_AAC_STREAM_FORMAT_ADIF;
+				else if (g_strcmp0(stream_format_str, "loas") == 0)
+					encoded_audio_info->details.aac.stream_format = SPA_AUDIO_AAC_STREAM_FORMAT_MP4LOAS;
+				else
+				{
+					GST_ERROR_OBJECT(parent, "caps describe AAC content, but its stream-format is unsupported; caps: %" GST_PTR_FORMAT, (gpointer)caps);
+					goto error;
+				}
+
+				pw_audio_format->audio_type = GST_PIPEWIRE_AUDIO_TYPE_AAC;
+
+				break;
+			}
+
+			default:
+				GST_ERROR_OBJECT(parent, "caps contain unsupported MPEG version; caps: %" GST_PTR_FORMAT, (gpointer)caps);
+				goto error;
+		}
 	}
 	// TODO: Add code for more non-PCM types here
 	else
@@ -866,6 +941,20 @@ gboolean gst_pw_audio_format_to_spa_pod(
 			break;
 		}
 
+		case GST_PIPEWIRE_AUDIO_TYPE_AAC:
+		{
+			struct spa_audio_info_aac aac_info = {
+				.rate = pw_audio_format->info.encoded_audio_info.rate,
+				.channels = pw_audio_format->info.encoded_audio_info.channels,
+				.stream_format = (enum spa_audio_aac_stream_format)(pw_audio_format->info.encoded_audio_info.details.aac.stream_format)
+				/* bitrate field is not needed for decoding */
+			};
+
+			*pod = spa_format_audio_aac_build(&builder, SPA_PARAM_EnumFormat, &aac_info);
+
+			break;
+		}
+
 		// TODO: Add code for more non-PCM types here
 
 		default:
@@ -1011,6 +1100,41 @@ gboolean gst_pw_audio_format_from_spa_pod_with_format_param(
 			break;
 		}
 
+		case SPA_MEDIA_SUBTYPE_aac:
+		{
+			if (spa_format_audio_aac_parse(format_param_pod, &(info.info.aac)) < 0)
+			{
+				GST_ERROR_OBJECT(parent, "could not parse AAC format: %s (%d)", wrapped_spa_strerror(err), -err);
+				goto error;
+			}
+
+			pw_audio_format->info.encoded_audio_info.rate = info.info.aac.rate;
+			pw_audio_format->info.encoded_audio_info.channels = info.info.aac.channels;
+
+			switch (info.info.aac.stream_format)
+			{
+				case SPA_AUDIO_AAC_STREAM_FORMAT_RAW:
+				case SPA_AUDIO_AAC_STREAM_FORMAT_MP2ADTS:
+				case SPA_AUDIO_AAC_STREAM_FORMAT_MP4ADTS:
+				case SPA_AUDIO_AAC_STREAM_FORMAT_ADIF:
+				case SPA_AUDIO_AAC_STREAM_FORMAT_MP4LOAS:
+					pw_audio_format->info.encoded_audio_info.details.aac.stream_format = info.info.aac.stream_format;
+					break;
+
+				default:
+					GST_ERROR_OBJECT(
+						parent,
+						"could not parse AAC format: unsupported stream format %" G_GUINT32_FORMAT,
+						(guint32)(info.info.aac.stream_format)
+					);
+					goto error;
+			}
+
+			pw_audio_format->audio_type = GST_PIPEWIRE_AUDIO_TYPE_AAC;
+
+			break;
+		}
+
 		default:
 			GST_ERROR_OBJECT(parent, "unsupported SPA media subtype %#010" G_GINT32_MODIFIER "x", (guint32)(info.media_subtype));
 			goto error;
@@ -1096,6 +1220,21 @@ gboolean gst_pw_audio_format_build_spa_pod_for_probing(
 			);
 			break;
 
+		case GST_PIPEWIRE_AUDIO_TYPE_AAC:
+			*pod = spa_format_audio_aac_build(
+				&builder, SPA_PARAM_EnumFormat,
+				&SPA_AUDIO_INFO_AAC_INIT(
+					/* Use 44.1 kHz stereo as formats to probe for. We really
+					 * just want to know if AAC is supported at all, so these
+					 * are picked as safe defaults - any device capable of
+					 * playing AAC must be able to handle this. */
+					.channels = 2,
+					.rate = 44100,
+					.stream_format = SPA_AUDIO_AAC_STREAM_FORMAT_RAW
+				)
+			);
+			break;
+
 		default:
 			return FALSE;
 	}
@@ -1145,6 +1284,7 @@ gsize gst_pw_audio_format_get_stride(GstPwAudioFormat const *pw_audio_format)
 
 		/* Stride has no real meaning in encoded audio. Just use 1 byte as stride. */
 		case GST_PIPEWIRE_AUDIO_TYPE_MP3:
+		case GST_PIPEWIRE_AUDIO_TYPE_AAC:
 			return 1;
 
 		// TODO: Add code for more non-PCM types here
@@ -1207,6 +1347,16 @@ gchar* gst_pw_audio_format_to_string(GstPwAudioFormat const *pw_audio_format)
 			);
 		}
 
+		case GST_PIPEWIRE_AUDIO_TYPE_AAC:
+		{
+			return gst_info_strdup_printf(
+				"AAC: rate %d channels %d stream format \"%s\"",
+				pw_audio_format->info.encoded_audio_info.rate,
+				pw_audio_format->info.encoded_audio_info.channels,
+				spa_aac_stream_format_to_string(pw_audio_format->info.encoded_audio_info.details.aac.stream_format)
+			);
+		}
+
 		// TODO: Add code for more non-PCM types here
 
 		default:
@@ -1248,6 +1398,7 @@ gsize gst_pw_audio_format_calculate_num_frames_from_duration(GstPwAudioFormat co
 		}
 
 		case GST_PIPEWIRE_AUDIO_TYPE_MP3:
+		case GST_PIPEWIRE_AUDIO_TYPE_AAC:
 		{
 			GstPipewireEncodedAudioInfo const *info = &(pw_audio_format->info.encoded_audio_info);
 			return gst_util_uint64_scale_int(duration, info->rate, GST_SECOND);
@@ -1291,6 +1442,7 @@ GstClockTime gst_pw_audio_format_calculate_duration_from_num_frames(GstPwAudioFo
 		}
 
 		case GST_PIPEWIRE_AUDIO_TYPE_MP3:
+		case GST_PIPEWIRE_AUDIO_TYPE_AAC:
 		{
 			GstPipewireEncodedAudioInfo const *info = &(pw_audio_format->info.encoded_audio_info);
 			return gst_util_uint64_scale_int(num_frames, GST_SECOND, info->rate);
