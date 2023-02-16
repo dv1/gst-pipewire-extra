@@ -2194,10 +2194,52 @@ finish:
 static GstFlowReturn gst_pw_audio_sink_render_encoded(GstPwAudioSink *self, GstBuffer *original_incoming_buffer)
 {
 	GstFlowReturn flow_ret = GST_FLOW_OK;
+	guint64 quantum_size_in_ns;
+	GstClockTime frame_duration;
 
 	GST_LOG_OBJECT(self, "incoming buffer: %" GST_PTR_FORMAT, (gpointer)original_incoming_buffer);
-	// TODO: if the current quantum length is larger than the frame length, request a smaller quantum;
-	// otherwise, we'll eventually get an underrun in the PW sink
+
+	if (G_UNLIKELY(!GST_BUFFER_DURATION_IS_VALID(original_incoming_buffer)))
+	{
+		GST_ERROR_OBJECT(self, "incoming buffer has no valid duration");
+		return GST_FLOW_ERROR;
+	}
+	frame_duration = GST_BUFFER_DURATION(original_incoming_buffer);
+
+	pw_thread_loop_lock(self->pipewire_core->loop);
+	quantum_size_in_ns = self->quantum_size_in_ns;
+	pw_thread_loop_unlock(self->pipewire_core->loop);
+
+	if (frame_duration < quantum_size_in_ns)
+	{
+		struct spa_dict_item items[2];
+		gchar *rate_str, *latency_str;
+		guint rate;
+		guint buffer_length;
+
+		rate = self->pw_audio_format.info.encoded_audio_info.rate;
+		buffer_length = gst_util_uint64_scale_round(frame_duration, rate, GST_SECOND);
+
+		GST_INFO_OBJECT(
+			self,
+			"got an encoded audio frame whose length (%" GST_TIME_FORMAT ") is"
+			"smaller than the current quantum's (%" GST_TIME_FORMAT "); updating"
+			"the stream's latency and rate properties to request a smaller quantum",
+			GST_TIME_ARGS(quantum_size_in_ns),
+			GST_TIME_ARGS(frame_duration)
+		);
+
+		rate_str = g_strdup_printf("1/%u", rate);
+		latency_str = g_strdup_printf("%u/%u", buffer_length, rate);
+
+		items[0] = SPA_DICT_ITEM_INIT(PW_KEY_NODE_RATE, rate_str);
+		items[1] = SPA_DICT_ITEM_INIT(PW_KEY_NODE_LATENCY, latency_str);
+
+		g_free(rate_str);
+		g_free(latency_str);
+
+		pw_stream_update_properties(self->stream, &SPA_DICT_INIT(items, 2));
+	}
 
 	LOCK_AUDIO_DATA_BUFFER_MUTEX(self);
 
