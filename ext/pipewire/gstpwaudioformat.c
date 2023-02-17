@@ -74,6 +74,9 @@
 #include <string.h>
 #include "gstpwaudioformat.h"
 
+/* Turn off -pedantic to mask the "ISO C forbids braced-groups within expressions"
+ * warnings that occur because PipeWire uses such braced-groups extensively. */
+
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wpedantic"
 
@@ -200,6 +203,59 @@ static GstPipewireAudioTypeDetails const audio_type_details[GST_NUM_PIPEWIRE_AUD
 			"channels = (int) [ 1, MAX ]",
 		.is_raw = FALSE
 	},
+
+	/* Vorbis */
+	{
+		.name = "Vorbis",
+		.template_caps_string = \
+			"audio/x-vorbis, " \
+			"rate = (int) [ 1, MAX ], " \
+			"channels = (int) [ 1, MAX ]",
+		.is_raw = FALSE
+	},
+
+	/* FLAC */
+	{
+		.name = "FLAC",
+		.template_caps_string = \
+			"audio/x-flac, " \
+			"framed = (boolean) true, " \
+			"rate = (int) [ 1, MAX ], " \
+			"channels = (int) [ 1, MAX ]",
+		.is_raw = FALSE
+	},
+
+	/* WMA */
+	{
+		.name = "WMA",
+		.template_caps_string = \
+			"audio/x-wma, " \
+			"wmaversion = (int) { 1, 2, 3, 4 }, " \
+			"block_align = (int) [ 0, MAX ], " \
+			"rate = (int) [ 1, MAX ], " \
+			"channels = (int) [ 1, MAX ]",
+		.is_raw = FALSE
+	},
+
+	/* ALAC */
+	{
+		.name = "ALAC",
+		.template_caps_string = \
+			"audio/x-alac, " \
+			"rate = (int) [ 1, MAX ], " \
+			"channels = (int) [ 1, MAX ]",
+		.is_raw = FALSE
+	},
+
+	/* Real Audio */
+	{
+		.name = "Real Audio",
+		.template_caps_string = \
+			"audio/x-pn-realaudio, " \
+			"rate = (int) [ 1, MAX ], " \
+			"channels = (int) [ 1, MAX ]",
+		.is_raw = FALSE
+	},
 };
 
 
@@ -306,6 +362,22 @@ static gchar const * spa_aac_stream_format_to_string(enum spa_audio_aac_stream_f
 		case SPA_AUDIO_AAC_STREAM_FORMAT_MP4LATM: return "ISO/IEC 14496-3 Low Overhead Audio Transport Multiplex (LATM)";
 		case SPA_AUDIO_AAC_STREAM_FORMAT_ADIF: return "ISO/IEC 14496-3 Audio Data Interchange Format (ADIF)";
 		case SPA_AUDIO_AAC_STREAM_FORMAT_MP4FF: return "ISO/IEC 14496-12 MPEG-4 file format";
+		default: return "<unknown>";
+	}
+}
+
+
+static gchar const * spa_wma_profile_to_string(enum spa_audio_wma_profile profile)
+{
+	switch (profile)
+	{
+		case SPA_AUDIO_WMA_PROFILE_WMA7: return "WMA 7";
+		case SPA_AUDIO_WMA_PROFILE_WMA8: return "WMA 8";
+		case SPA_AUDIO_WMA_PROFILE_WMA9: return "WMA 9";
+		case SPA_AUDIO_WMA_PROFILE_WMA10: return "WMA 10";
+		case SPA_AUDIO_WMA_PROFILE_WMA9_PRO: return "WMA 9 Pro";
+		case SPA_AUDIO_WMA_PROFILE_WMA9_LOSSLESS: return "WMA 9 Lossless";
+		case SPA_AUDIO_WMA_PROFILE_WMA10_LOSSLESS: return "WMA 10 Lossless";
 		default: return "<unknown>";
 	}
 }
@@ -584,185 +656,267 @@ gboolean gst_pw_audio_format_from_caps(GstPwAudioFormat *pw_audio_format, GstObj
 	media_type = gst_structure_get_name(fmt_structure);
 
 	if (g_strcmp0(media_type, "audio/x-raw") == 0)
-	{
-		if (!gst_audio_info_from_caps(&(pw_audio_format->info.pcm_audio_info), caps))
-		{
-			GST_ERROR_OBJECT(
-				parent,
-				"could not convert caps \"%" GST_PTR_FORMAT "\" to a PCM audio info structure",
-				(gpointer)caps
-			);
-			goto error;
-		}
-
 		pw_audio_format->audio_type = GST_PIPEWIRE_AUDIO_TYPE_PCM;
-	}
 	else if (g_strcmp0(media_type, "audio/x-dsd") == 0)
-	{
-		GstPipewireDsdInfo *dsd_audio_info = &(pw_audio_format->info.dsd_audio_info);
-		gchar const *format_str = NULL;
-		guint64 channel_mask = 0;
-
-		format_str = gst_structure_get_string(fmt_structure, "format");
-		if (format_str == NULL)
-		{
-			GST_ERROR_OBJECT(parent, "caps have no format field; caps: %" GST_PTR_FORMAT, (gpointer)caps);
-			goto error;
-		}
-
-		dsd_audio_info->format = gst_pipewire_dsd_format_from_string(format_str);
-		if (dsd_audio_info->format == GST_PIPEWIRE_DSD_FORMAT_DSD_UNKNOWN)
-		{
-			GST_ERROR_OBJECT(parent, "caps have unsupported/invalid format field; caps: %" GST_PTR_FORMAT, (gpointer)caps);
-			goto error;
-		}
-
-		if (!gst_structure_get_int(fmt_structure, "rate", &(dsd_audio_info->rate)))
-		{
-			GST_ERROR_OBJECT(parent, "caps have no rate field; caps: %" GST_PTR_FORMAT, (gpointer)caps);
-			goto error;
-		}
-
-		if (dsd_audio_info->rate < 1)
-		{
-			GST_ERROR_OBJECT(parent, "caps have invalid rate field; caps: %" GST_PTR_FORMAT, (gpointer)caps);
-			goto error;
-		}
-
-		if (!gst_structure_get_int(fmt_structure, "channels", &(dsd_audio_info->channels)))
-		{
-			GST_ERROR_OBJECT(parent, "caps have no channels field; caps: %" GST_PTR_FORMAT, (gpointer)caps);
-			goto error;
-		}
-
-		if (dsd_audio_info->channels < 1)
-		{
-			GST_ERROR_OBJECT(parent, "caps have invalid channels field; caps: %" GST_PTR_FORMAT, (gpointer)caps);
-			goto error;
-		}
-
-		if (!gst_structure_get(fmt_structure, "channel-mask", GST_TYPE_BITMASK, &channel_mask, NULL) ||
-			((channel_mask == 0) && (dsd_audio_info->channels == 1))
-		)
-		{
-			switch (dsd_audio_info->channels)
-			{
-				case 1:
-					dsd_audio_info->positions[0] = GST_AUDIO_CHANNEL_POSITION_MONO;
-					break;
-
-				case 2:
-					dsd_audio_info->positions[0] = GST_AUDIO_CHANNEL_POSITION_FRONT_LEFT;
-					dsd_audio_info->positions[1] = GST_AUDIO_CHANNEL_POSITION_FRONT_RIGHT;
-					break;
-
-				default:
-					GST_ERROR_OBJECT(parent, "caps indicate raw multichannel data but have no channel-mask field; caps: %" GST_PTR_FORMAT, (gpointer)caps);
-					goto error;
-			}
-		}
-		else if (channel_mask == 0)
-		{
-			gint i;
-			for (i = 0; i < MIN(64, dsd_audio_info->channels); i++)
-				dsd_audio_info->positions[i] = GST_AUDIO_CHANNEL_POSITION_NONE;
-		}
-		else
-		{
-			if (!gst_audio_channel_positions_from_mask(dsd_audio_info->channels, channel_mask, dsd_audio_info->positions))
-			{
-				GST_ERROR_OBJECT(
-					parent,
-					"invalid channel mask 0x%016" G_GINT64_MODIFIER "x for %d channels",
-					channel_mask,
-					dsd_audio_info->channels
-				);
-				goto error;
-			}
-		}
-
 		pw_audio_format->audio_type = GST_PIPEWIRE_AUDIO_TYPE_DSD;
-	}
 	else if (g_strcmp0(media_type, "audio/mpeg") == 0)
-	{
-		gint mpegversion;
-		GstPipewireEncodedAudioInfo *encoded_audio_info = &(pw_audio_format->info.encoded_audio_info);
-
-		if (!gst_structure_get_int(fmt_structure, "mpegversion", &mpegversion))
-		{
-			GST_ERROR_OBJECT(parent, "caps have no mpegversion field; caps: %" GST_PTR_FORMAT, (gpointer)caps);
-			goto error;
-		}
-
-		if (!gst_structure_get_int(fmt_structure, "rate", &(encoded_audio_info->rate)))
-		{
-			GST_ERROR_OBJECT(parent, "caps have no rate field; caps: %" GST_PTR_FORMAT, (gpointer)caps);
-			goto error;
-		}
-
-		if (encoded_audio_info->rate < 1)
-		{
-			GST_ERROR_OBJECT(parent, "caps have invalid rate field; caps: %" GST_PTR_FORMAT, (gpointer)caps);
-			goto error;
-		}
-
-		if (!gst_structure_get_int(fmt_structure, "channels", &(encoded_audio_info->channels)))
-		{
-			GST_ERROR_OBJECT(parent, "caps have no channels field; caps: %" GST_PTR_FORMAT, (gpointer)caps);
-			goto error;
-		}
-
-		if (encoded_audio_info->channels < 1)
-		{
-			GST_ERROR_OBJECT(parent, "caps have invalid channels field; caps: %" GST_PTR_FORMAT, (gpointer)caps);
-			goto error;
-		}
-
-		switch (mpegversion)
-		{
-			case 1:
-				pw_audio_format->audio_type = GST_PIPEWIRE_AUDIO_TYPE_MP3;
-				break;
-
-			case 2:
-			case 4:
-			{
-				gchar const *stream_format_str = gst_structure_get_string(fmt_structure, "stream-format");
-				if (stream_format_str == NULL)
-				{
-					GST_ERROR_OBJECT(parent, "caps describe AAC content, but stream-format field is missing; caps: %" GST_PTR_FORMAT, (gpointer)caps);
-					goto error;
-				}
-
-				if (g_strcmp0(stream_format_str, "raw") == 0)
-					encoded_audio_info->details.aac.stream_format = SPA_AUDIO_AAC_STREAM_FORMAT_RAW;
-				else if (g_strcmp0(stream_format_str, "adts") == 0)
-					encoded_audio_info->details.aac.stream_format = (mpegversion == 2) ? SPA_AUDIO_AAC_STREAM_FORMAT_MP2ADTS : SPA_AUDIO_AAC_STREAM_FORMAT_MP4ADTS;
-				else if (g_strcmp0(stream_format_str, "adif") == 0)
-					encoded_audio_info->details.aac.stream_format = SPA_AUDIO_AAC_STREAM_FORMAT_ADIF;
-				else if (g_strcmp0(stream_format_str, "loas") == 0)
-					encoded_audio_info->details.aac.stream_format = SPA_AUDIO_AAC_STREAM_FORMAT_MP4LOAS;
-				else
-				{
-					GST_ERROR_OBJECT(parent, "caps describe AAC content, but its stream-format is unsupported; caps: %" GST_PTR_FORMAT, (gpointer)caps);
-					goto error;
-				}
-
-				pw_audio_format->audio_type = GST_PIPEWIRE_AUDIO_TYPE_AAC;
-
-				break;
-			}
-
-			default:
-				GST_ERROR_OBJECT(parent, "caps contain unsupported MPEG version; caps: %" GST_PTR_FORMAT, (gpointer)caps);
-				goto error;
-		}
-	}
-	// TODO: Add code for more non-PCM types here
+		/* This also includes AAC. MP3 and AAC are distinguished
+		 * by the mpegversion caps field further below. */
+		pw_audio_format->audio_type = GST_PIPEWIRE_AUDIO_TYPE_MP3;
+	else if (g_strcmp0(media_type, "audio/x-vorbis") == 0)
+		pw_audio_format->audio_type = GST_PIPEWIRE_AUDIO_TYPE_VORBIS;
+	else if (g_strcmp0(media_type, "audio/x-flac") == 0)
+		pw_audio_format->audio_type = GST_PIPEWIRE_AUDIO_TYPE_FLAC;
+	else if (g_strcmp0(media_type, "audio/x-wma") == 0)
+		pw_audio_format->audio_type = GST_PIPEWIRE_AUDIO_TYPE_WMA;
+	else if (g_strcmp0(media_type, "audio/x-alac") == 0)
+		pw_audio_format->audio_type = GST_PIPEWIRE_AUDIO_TYPE_ALAC;
+	else if (g_strcmp0(media_type, "audio/x-pn-realaudio") == 0)
+		pw_audio_format->audio_type = GST_PIPEWIRE_AUDIO_TYPE_REAL_AUDIO;
 	else
 	{
 		GST_ERROR_OBJECT(parent, "unsupported media type \"%s\"", media_type);
 		goto error;
+	}
+
+	switch (pw_audio_format->audio_type)
+	{
+		case GST_PIPEWIRE_AUDIO_TYPE_PCM:
+		{
+			if (!gst_audio_info_from_caps(&(pw_audio_format->info.pcm_audio_info), caps))
+			{
+				GST_ERROR_OBJECT(
+					parent,
+					"could not convert caps \"%" GST_PTR_FORMAT "\" to a PCM audio info structure",
+					(gpointer)caps
+				);
+				goto error;
+			}
+
+			break;
+		}
+
+		case GST_PIPEWIRE_AUDIO_TYPE_DSD:
+		{
+			GstPipewireDsdInfo *dsd_audio_info = &(pw_audio_format->info.dsd_audio_info);
+			gchar const *format_str = NULL;
+			guint64 channel_mask = 0;
+
+			format_str = gst_structure_get_string(fmt_structure, "format");
+			if (format_str == NULL)
+			{
+				GST_ERROR_OBJECT(parent, "caps have no format field; caps: %" GST_PTR_FORMAT, (gpointer)caps);
+				goto error;
+			}
+
+			dsd_audio_info->format = gst_pipewire_dsd_format_from_string(format_str);
+			if (dsd_audio_info->format == GST_PIPEWIRE_DSD_FORMAT_DSD_UNKNOWN)
+			{
+				GST_ERROR_OBJECT(parent, "caps have unsupported/invalid format field; caps: %" GST_PTR_FORMAT, (gpointer)caps);
+				goto error;
+			}
+
+			if (!gst_structure_get_int(fmt_structure, "rate", &(dsd_audio_info->rate)))
+			{
+				GST_ERROR_OBJECT(parent, "caps have no rate field; caps: %" GST_PTR_FORMAT, (gpointer)caps);
+				goto error;
+			}
+
+			if (dsd_audio_info->rate < 1)
+			{
+				GST_ERROR_OBJECT(parent, "caps have invalid rate field; caps: %" GST_PTR_FORMAT, (gpointer)caps);
+				goto error;
+			}
+
+			if (!gst_structure_get_int(fmt_structure, "channels", &(dsd_audio_info->channels)))
+			{
+				GST_ERROR_OBJECT(parent, "caps have no channels field; caps: %" GST_PTR_FORMAT, (gpointer)caps);
+				goto error;
+			}
+
+			if (dsd_audio_info->channels < 1)
+			{
+				GST_ERROR_OBJECT(parent, "caps have invalid channels field; caps: %" GST_PTR_FORMAT, (gpointer)caps);
+				goto error;
+			}
+
+			if (!gst_structure_get(fmt_structure, "channel-mask", GST_TYPE_BITMASK, &channel_mask, NULL) ||
+				((channel_mask == 0) && (dsd_audio_info->channels == 1))
+			)
+			{
+				switch (dsd_audio_info->channels)
+				{
+					case 1:
+						dsd_audio_info->positions[0] = GST_AUDIO_CHANNEL_POSITION_MONO;
+						break;
+
+					case 2:
+						dsd_audio_info->positions[0] = GST_AUDIO_CHANNEL_POSITION_FRONT_LEFT;
+						dsd_audio_info->positions[1] = GST_AUDIO_CHANNEL_POSITION_FRONT_RIGHT;
+						break;
+
+					default:
+						GST_ERROR_OBJECT(parent, "caps indicate raw multichannel data but have no channel-mask field; caps: %" GST_PTR_FORMAT, (gpointer)caps);
+						goto error;
+				}
+			}
+			else if (channel_mask == 0)
+			{
+				gint i;
+				for (i = 0; i < MIN(64, dsd_audio_info->channels); i++)
+					dsd_audio_info->positions[i] = GST_AUDIO_CHANNEL_POSITION_NONE;
+			}
+			else
+			{
+				if (!gst_audio_channel_positions_from_mask(dsd_audio_info->channels, channel_mask, dsd_audio_info->positions))
+				{
+					GST_ERROR_OBJECT(
+						parent,
+						"invalid channel mask 0x%016" G_GINT64_MODIFIER "x for %d channels",
+						channel_mask,
+						dsd_audio_info->channels
+					);
+					goto error;
+				}
+			}
+
+			break;
+		}
+
+		case GST_PIPEWIRE_AUDIO_TYPE_MP3:
+		case GST_PIPEWIRE_AUDIO_TYPE_VORBIS:
+		case GST_PIPEWIRE_AUDIO_TYPE_FLAC:
+		case GST_PIPEWIRE_AUDIO_TYPE_WMA:
+		case GST_PIPEWIRE_AUDIO_TYPE_ALAC:
+		case GST_PIPEWIRE_AUDIO_TYPE_REAL_AUDIO:
+		{
+			/* All encoded formats have a rate and channels field in their caps.
+			 * Some have additional information, such as the profile in WMA. */
+
+			GstPipewireEncodedAudioInfo *encoded_audio_info = &(pw_audio_format->info.encoded_audio_info);
+
+			if (!gst_structure_get_int(fmt_structure, "rate", &(encoded_audio_info->rate)))
+			{
+				GST_ERROR_OBJECT(parent, "caps have no rate field; caps: %" GST_PTR_FORMAT, (gpointer)caps);
+				goto error;
+			}
+
+			if (encoded_audio_info->rate < 1)
+			{
+				GST_ERROR_OBJECT(parent, "caps have invalid rate field; caps: %" GST_PTR_FORMAT, (gpointer)caps);
+				goto error;
+			}
+
+			if (!gst_structure_get_int(fmt_structure, "channels", &(encoded_audio_info->channels)))
+			{
+				GST_ERROR_OBJECT(parent, "caps have no channels field; caps: %" GST_PTR_FORMAT, (gpointer)caps);
+				goto error;
+			}
+
+			if (encoded_audio_info->channels < 1)
+			{
+				GST_ERROR_OBJECT(parent, "caps have invalid channels field; caps: %" GST_PTR_FORMAT, (gpointer)caps);
+				goto error;
+			}
+
+			/* Handle additional, format specific caps. */
+			switch (pw_audio_format->audio_type)
+			{
+				case GST_PIPEWIRE_AUDIO_TYPE_MP3:
+				{
+					gint mpegversion;
+
+					if (!gst_structure_get_int(fmt_structure, "mpegversion", &mpegversion))
+					{
+						GST_ERROR_OBJECT(parent, "caps have no mpegversion field; caps: %" GST_PTR_FORMAT, (gpointer)caps);
+						goto error;
+					}
+
+					switch (mpegversion)
+					{
+						case 1:
+							pw_audio_format->audio_type = GST_PIPEWIRE_AUDIO_TYPE_MP3;
+							break;
+
+						case 2:
+						case 4:
+						{
+							gchar const *stream_format_str = gst_structure_get_string(fmt_structure, "stream-format");
+							if (stream_format_str == NULL)
+							{
+								GST_ERROR_OBJECT(parent, "caps describe AAC content, but stream-format field is missing; caps: %" GST_PTR_FORMAT, (gpointer)caps);
+								goto error;
+							}
+
+							if (g_strcmp0(stream_format_str, "raw") == 0)
+								encoded_audio_info->details.aac.stream_format = SPA_AUDIO_AAC_STREAM_FORMAT_RAW;
+							else if (g_strcmp0(stream_format_str, "adts") == 0)
+								encoded_audio_info->details.aac.stream_format = (mpegversion == 2) ? SPA_AUDIO_AAC_STREAM_FORMAT_MP2ADTS : SPA_AUDIO_AAC_STREAM_FORMAT_MP4ADTS;
+							else if (g_strcmp0(stream_format_str, "adif") == 0)
+								encoded_audio_info->details.aac.stream_format = SPA_AUDIO_AAC_STREAM_FORMAT_ADIF;
+							else if (g_strcmp0(stream_format_str, "loas") == 0)
+								encoded_audio_info->details.aac.stream_format = SPA_AUDIO_AAC_STREAM_FORMAT_MP4LOAS;
+							else
+							{
+								GST_ERROR_OBJECT(parent, "caps describe AAC content, but its stream-format is unsupported; caps: %" GST_PTR_FORMAT, (gpointer)caps);
+								goto error;
+							}
+
+							pw_audio_format->audio_type = GST_PIPEWIRE_AUDIO_TYPE_AAC;
+
+							break;
+						}
+
+						default:
+							GST_ERROR_OBJECT(parent, "caps contain unsupported MPEG version; caps: %" GST_PTR_FORMAT, (gpointer)caps);
+							goto error;
+					}
+
+					break;
+				}
+
+				case GST_PIPEWIRE_AUDIO_TYPE_WMA:
+				{
+					gint block_align;
+					gint wmaversion;
+
+					if (!gst_structure_get_int(fmt_structure, "block_align", &block_align))
+					{
+						GST_ERROR_OBJECT(parent, "caps have no block_align field; caps: %" GST_PTR_FORMAT, (gpointer)caps);
+						goto error;
+					}
+
+					if (!gst_structure_get_int(fmt_structure, "wmaversion", &wmaversion))
+					{
+						GST_ERROR_OBJECT(parent, "caps have no wmaversion field; caps: %" GST_PTR_FORMAT, (gpointer)caps);
+						goto error;
+					}
+
+					encoded_audio_info->details.wma.block_align = block_align;
+
+					switch (wmaversion)
+					{
+						case 1: encoded_audio_info->details.wma.profile = SPA_AUDIO_WMA_PROFILE_WMA7; break;
+						case 2: encoded_audio_info->details.wma.profile = SPA_AUDIO_WMA_PROFILE_WMA8; break;
+						case 3: encoded_audio_info->details.wma.profile = SPA_AUDIO_WMA_PROFILE_WMA9; break;
+						case 4: encoded_audio_info->details.wma.profile = SPA_AUDIO_WMA_PROFILE_WMA9_LOSSLESS; break;
+						default:
+							GST_ERROR_OBJECT(parent, "caps contain unsupported WMA version; caps: %" GST_PTR_FORMAT, (gpointer)caps);
+							goto error;
+					}
+
+					break;
+				}
+
+				default:
+					break;
+			}
+
+			break;
+		}
+
+		default:
+			g_assert_not_reached();
 	}
 
 	return TRUE;
@@ -929,39 +1083,41 @@ gboolean gst_pw_audio_format_to_spa_pod(
 			break;
 		}
 
-		case GST_PIPEWIRE_AUDIO_TYPE_MP3:
-		{
-			struct spa_audio_info_mp3 mp3_info = {
-				.rate = pw_audio_format->info.encoded_audio_info.rate,
-				.channels = pw_audio_format->info.encoded_audio_info.channels
-			};
-
-			*pod = spa_format_audio_mp3_build(&builder, SPA_PARAM_EnumFormat, &mp3_info);
-
-			break;
+#define ENCODED_FORMAT_CASE(TYPE_NAME, name, ...) \
+		case GST_PIPEWIRE_AUDIO_TYPE_##TYPE_NAME : \
+		{ \
+			struct spa_audio_info_##name name ##_info = { \
+				.rate = pw_audio_format->info.encoded_audio_info.rate, \
+				.channels = pw_audio_format->info.encoded_audio_info.channels, \
+				__VA_ARGS__ \
+			}; \
+\
+			*pod = spa_format_audio_##name##_build(&builder, SPA_PARAM_EnumFormat, & name##_info); \
+\
+			break; \
 		}
 
-		case GST_PIPEWIRE_AUDIO_TYPE_AAC:
-		{
-			struct spa_audio_info_aac aac_info = {
-				.rate = pw_audio_format->info.encoded_audio_info.rate,
-				.channels = pw_audio_format->info.encoded_audio_info.channels,
-				.stream_format = (enum spa_audio_aac_stream_format)(pw_audio_format->info.encoded_audio_info.details.aac.stream_format)
-				/* bitrate field is not needed for decoding */
-			};
-
-			*pod = spa_format_audio_aac_build(&builder, SPA_PARAM_EnumFormat, &aac_info);
-
-			break;
-		}
-
-		// TODO: Add code for more non-PCM types here
+		ENCODED_FORMAT_CASE(MP3, mp3)
+		ENCODED_FORMAT_CASE(AAC, aac,
+			.stream_format = (enum spa_audio_aac_stream_format)(pw_audio_format->info.encoded_audio_info.details.aac.stream_format)
+			/* bitrate field is not needed for decoding */
+		)
+		ENCODED_FORMAT_CASE(VORBIS, vorbis)
+		ENCODED_FORMAT_CASE(FLAC, flac)
+		ENCODED_FORMAT_CASE(WMA, wma,
+			.block_align = pw_audio_format->info.encoded_audio_info.details.wma.block_align,
+			.profile = (enum spa_audio_wma_profile)(pw_audio_format->info.encoded_audio_info.details.wma.profile),
+		)
+		ENCODED_FORMAT_CASE(ALAC, alac)
+		ENCODED_FORMAT_CASE(REAL_AUDIO, ra)
 
 		default:
 			goto error;
 	}
 
 	return TRUE;
+
+#undef ENCODED_FORMAT_CASE
 
 error:
 	return FALSE;
@@ -1084,32 +1240,27 @@ gboolean gst_pw_audio_format_from_spa_pod_with_format_param(
 			break;
 		}
 
+#define COMMON_ENCODED_FORMAT_PROCESSING(LOWER_NAME, UPPER_NAME) \
+		G_STMT_START { \
+			if (spa_format_audio_##LOWER_NAME##_parse(format_param_pod, &(info.info.LOWER_NAME)) < 0) \
+			{ \
+				GST_ERROR_OBJECT(parent, "could not parse " #UPPER_NAME " format: %s (%d)", wrapped_spa_strerror(err), -err); \
+				goto error; \
+			} \
+\
+			pw_audio_format->info.encoded_audio_info.rate = info.info.LOWER_NAME.rate; \
+			pw_audio_format->info.encoded_audio_info.channels = info.info.LOWER_NAME.channels; \
+ \
+			pw_audio_format->audio_type = GST_PIPEWIRE_AUDIO_TYPE_ ##UPPER_NAME; \
+		} G_STMT_END
+
 		case SPA_MEDIA_SUBTYPE_mp3:
-		{
-			if (spa_format_audio_mp3_parse(format_param_pod, &(info.info.mp3)) < 0)
-			{
-				GST_ERROR_OBJECT(parent, "could not parse MP3 format: %s (%d)", wrapped_spa_strerror(err), -err);
-				goto error;
-			}
-
-			pw_audio_format->info.encoded_audio_info.rate = info.info.mp3.rate;
-			pw_audio_format->info.encoded_audio_info.channels = info.info.mp3.channels;
-
-			pw_audio_format->audio_type = GST_PIPEWIRE_AUDIO_TYPE_MP3;
-
+			COMMON_ENCODED_FORMAT_PROCESSING(mp3, MP3);
 			break;
-		}
 
 		case SPA_MEDIA_SUBTYPE_aac:
 		{
-			if (spa_format_audio_aac_parse(format_param_pod, &(info.info.aac)) < 0)
-			{
-				GST_ERROR_OBJECT(parent, "could not parse AAC format: %s (%d)", wrapped_spa_strerror(err), -err);
-				goto error;
-			}
-
-			pw_audio_format->info.encoded_audio_info.rate = info.info.aac.rate;
-			pw_audio_format->info.encoded_audio_info.channels = info.info.aac.channels;
+			COMMON_ENCODED_FORMAT_PROCESSING(aac, AAC);
 
 			switch (info.info.aac.stream_format)
 			{
@@ -1130,10 +1281,51 @@ gboolean gst_pw_audio_format_from_spa_pod_with_format_param(
 					goto error;
 			}
 
-			pw_audio_format->audio_type = GST_PIPEWIRE_AUDIO_TYPE_AAC;
+			break;
+		}
+
+		case SPA_MEDIA_SUBTYPE_vorbis:
+			COMMON_ENCODED_FORMAT_PROCESSING(vorbis, VORBIS);
+			break;
+
+		case SPA_MEDIA_SUBTYPE_flac:
+			COMMON_ENCODED_FORMAT_PROCESSING(flac, FLAC);
+			break;
+
+		case SPA_MEDIA_SUBTYPE_wma:
+		{
+			COMMON_ENCODED_FORMAT_PROCESSING(wma, WMA);
+
+			pw_audio_format->info.encoded_audio_info.details.wma.block_align = info.info.wma.block_align;
+
+			switch (info.info.wma.profile)
+			{
+				case SPA_AUDIO_WMA_PROFILE_WMA7:
+				case SPA_AUDIO_WMA_PROFILE_WMA8:
+				case SPA_AUDIO_WMA_PROFILE_WMA9:
+				case SPA_AUDIO_WMA_PROFILE_WMA9_LOSSLESS:
+					pw_audio_format->info.encoded_audio_info.details.wma.profile = info.info.wma.profile;
+					break;
+
+				default:
+					GST_ERROR_OBJECT(
+						parent,
+						"could not parse WMA format: unsupported profile %" G_GUINT32_FORMAT,
+						(guint32)(info.info.wma.profile)
+					);
+					goto error;
+			}
 
 			break;
 		}
+
+		case SPA_MEDIA_SUBTYPE_alac:
+			COMMON_ENCODED_FORMAT_PROCESSING(alac, ALAC);
+			break;
+
+		case SPA_MEDIA_SUBTYPE_ra:
+			COMMON_ENCODED_FORMAT_PROCESSING(ra, REAL_AUDIO);
+			break;
 
 		default:
 			GST_ERROR_OBJECT(parent, "unsupported SPA media subtype %#010" G_GINT32_MODIFIER "x", (guint32)(info.media_subtype));
@@ -1141,6 +1333,8 @@ gboolean gst_pw_audio_format_from_spa_pod_with_format_param(
 	}
 
 	return TRUE;
+
+#undef COMMON_ENCODED_FORMAT_PROCESSING
 
 error:
 	return FALSE;
@@ -1206,38 +1400,40 @@ gboolean gst_pw_audio_format_build_spa_pod_for_probing(
 			);
 			break;
 
-		case GST_PIPEWIRE_AUDIO_TYPE_MP3:
-			*pod = spa_format_audio_mp3_build(
-				&builder, SPA_PARAM_EnumFormat,
-				&SPA_AUDIO_INFO_MP3_INIT(
-					/* Use 44.1 kHz stereo as formats to probe for. We really
-					 * just want to know if MP3 is supported at all, so these
-					 * are picked as safe defaults - any device capable of
-					 * playing MP3 must be able to handle this. */
-					.channels = 2,
-					.rate = 44100
-				)
-			);
+			/* Use 44.1 kHz stereo as formats to probe for. We really
+			 * just want to know if the format is supported at all, so
+			 * these are picked as safe defaults - any device capable
+			 * of playing that format must be able to handle this. */
+#define ENCODED_FORMAT_CASE(TYPE_NAME, SPA_TYPE_NAME, name, ...) \
+		case GST_PIPEWIRE_AUDIO_TYPE_##TYPE_NAME : \
+			*pod = spa_format_audio_##name##_build( \
+				&builder, SPA_PARAM_EnumFormat, \
+				&SPA_AUDIO_INFO_##SPA_TYPE_NAME##_INIT( \
+					.channels = 2, \
+					.rate = 44100, \
+					__VA_ARGS__ \
+				) \
+			); \
 			break;
 
-		case GST_PIPEWIRE_AUDIO_TYPE_AAC:
-			*pod = spa_format_audio_aac_build(
-				&builder, SPA_PARAM_EnumFormat,
-				&SPA_AUDIO_INFO_AAC_INIT(
-					/* Use 44.1 kHz stereo as formats to probe for. We really
-					 * just want to know if AAC is supported at all, so these
-					 * are picked as safe defaults - any device capable of
-					 * playing AAC must be able to handle this. */
-					.channels = 2,
-					.rate = 44100,
-					.stream_format = SPA_AUDIO_AAC_STREAM_FORMAT_RAW
-				)
-			);
-			break;
+		ENCODED_FORMAT_CASE(MP3, MP3, mp3)
+		ENCODED_FORMAT_CASE(AAC, AAC, aac,
+			.stream_format = SPA_AUDIO_AAC_STREAM_FORMAT_RAW
+		)
+		ENCODED_FORMAT_CASE(VORBIS, VORBIS, vorbis)
+		ENCODED_FORMAT_CASE(FLAC, FLAC, flac)
+		ENCODED_FORMAT_CASE(WMA, WMA, wma,
+			.profile = SPA_AUDIO_WMA_PROFILE_WMA8,
+			.block_align = 16384,
+		)
+		ENCODED_FORMAT_CASE(ALAC, ALAC, alac)
+		ENCODED_FORMAT_CASE(REAL_AUDIO, RA, ra)
 
 		default:
 			return FALSE;
 	}
+
+#undef ENCODED_FORMAT_CASE
 
 	return TRUE;
 }
@@ -1285,9 +1481,12 @@ gsize gst_pw_audio_format_get_stride(GstPwAudioFormat const *pw_audio_format)
 		/* Stride has no real meaning in encoded audio. Just use 1 byte as stride. */
 		case GST_PIPEWIRE_AUDIO_TYPE_MP3:
 		case GST_PIPEWIRE_AUDIO_TYPE_AAC:
+		case GST_PIPEWIRE_AUDIO_TYPE_VORBIS:
+		case GST_PIPEWIRE_AUDIO_TYPE_FLAC:
+		case GST_PIPEWIRE_AUDIO_TYPE_WMA:
+		case GST_PIPEWIRE_AUDIO_TYPE_ALAC:
+		case GST_PIPEWIRE_AUDIO_TYPE_REAL_AUDIO:
 			return 1;
-
-		// TODO: Add code for more non-PCM types here
 
 		default:
 			/* Reaching this place is a hard error, since without a defined
@@ -1338,14 +1537,21 @@ gchar* gst_pw_audio_format_to_string(GstPwAudioFormat const *pw_audio_format)
 			);
 		}
 
-		case GST_PIPEWIRE_AUDIO_TYPE_MP3:
-		{
-			return gst_info_strdup_printf(
-				"MP3: rate %d channels %d",
-				pw_audio_format->info.encoded_audio_info.rate,
-				pw_audio_format->info.encoded_audio_info.channels
-			);
+#define DEFAULT_ENCODED_FORMAT_CASE(TYPE_NAME, STR) \
+		case GST_PIPEWIRE_AUDIO_TYPE_##TYPE_NAME: \
+		{ \
+			return gst_info_strdup_printf( \
+				STR ": rate %d channels %d", \
+				pw_audio_format->info.encoded_audio_info.rate, \
+				pw_audio_format->info.encoded_audio_info.channels \
+			); \
 		}
+
+		DEFAULT_ENCODED_FORMAT_CASE(MP3, "MP3")
+		DEFAULT_ENCODED_FORMAT_CASE(VORBIS, "Vorbis")
+		DEFAULT_ENCODED_FORMAT_CASE(FLAC, "FLAC")
+		DEFAULT_ENCODED_FORMAT_CASE(ALAC, "ALAC")
+		DEFAULT_ENCODED_FORMAT_CASE(REAL_AUDIO, "Real Audio")
 
 		case GST_PIPEWIRE_AUDIO_TYPE_AAC:
 		{
@@ -1357,7 +1563,18 @@ gchar* gst_pw_audio_format_to_string(GstPwAudioFormat const *pw_audio_format)
 			);
 		}
 
-		// TODO: Add code for more non-PCM types here
+		case GST_PIPEWIRE_AUDIO_TYPE_WMA:
+		{
+			return gst_info_strdup_printf(
+				"WMA: rate %d channels %d block-align %" G_GUINT32_FORMAT " profile \"%s\"",
+				pw_audio_format->info.encoded_audio_info.rate,
+				pw_audio_format->info.encoded_audio_info.channels,
+				pw_audio_format->info.encoded_audio_info.details.wma.block_align,
+				spa_wma_profile_to_string(pw_audio_format->info.encoded_audio_info.details.wma.profile)
+			);
+		}
+
+#undef DEFAULT_ENCODED_FORMAT_CASE
 
 		default:
 			return g_strdup("<unknown>");
@@ -1399,12 +1616,15 @@ gsize gst_pw_audio_format_calculate_num_frames_from_duration(GstPwAudioFormat co
 
 		case GST_PIPEWIRE_AUDIO_TYPE_MP3:
 		case GST_PIPEWIRE_AUDIO_TYPE_AAC:
+		case GST_PIPEWIRE_AUDIO_TYPE_VORBIS:
+		case GST_PIPEWIRE_AUDIO_TYPE_FLAC:
+		case GST_PIPEWIRE_AUDIO_TYPE_WMA:
+		case GST_PIPEWIRE_AUDIO_TYPE_ALAC:
+		case GST_PIPEWIRE_AUDIO_TYPE_REAL_AUDIO:
 		{
 			GstPipewireEncodedAudioInfo const *info = &(pw_audio_format->info.encoded_audio_info);
 			return gst_util_uint64_scale_int(duration, info->rate, GST_SECOND);
 		}
-
-		// TODO: Add code for more non-PCM types here
 
 		default:
 			return 0;
@@ -1443,6 +1663,11 @@ GstClockTime gst_pw_audio_format_calculate_duration_from_num_frames(GstPwAudioFo
 
 		case GST_PIPEWIRE_AUDIO_TYPE_MP3:
 		case GST_PIPEWIRE_AUDIO_TYPE_AAC:
+		case GST_PIPEWIRE_AUDIO_TYPE_VORBIS:
+		case GST_PIPEWIRE_AUDIO_TYPE_FLAC:
+		case GST_PIPEWIRE_AUDIO_TYPE_WMA:
+		case GST_PIPEWIRE_AUDIO_TYPE_ALAC:
+		case GST_PIPEWIRE_AUDIO_TYPE_REAL_AUDIO:
 		{
 			GstPipewireEncodedAudioInfo const *info = &(pw_audio_format->info.encoded_audio_info);
 			return gst_util_uint64_scale_int(num_frames, GST_SECOND, info->rate);
