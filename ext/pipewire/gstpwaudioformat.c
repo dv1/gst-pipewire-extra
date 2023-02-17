@@ -114,10 +114,6 @@ typedef struct
 GstPipewireAudioTypeDetails;
 
 
-// TODO: Currently, only PCM and DSD are supported.
-// Fill in compressed audio support (AC-3 etc).
-
-
 /* Order the PCM formats by quality and performance. 32-bit integer samples
  * are the first choice - they have plenty of dynamic range and are processed
  * efficiently. Next come 32- and 64-bit floating point formats, which are
@@ -605,10 +601,6 @@ GstCaps* gst_pw_audio_format_fixate_caps(GstCaps *caps)
 		gst_structure_fixate_field_string(s, "format", "DSD_U8");
 		gst_structure_fixate_field_nearest_int(s, "channels", 2);
 		gst_structure_fixate_field_nearest_int(s, "rate", GST_PIPEWIRE_DSD_DSD64_BYTE_RATE);
-	}
-	else
-	{
-		// TODO: Add code for more non-PCM types here
 	}
 
 	/* For the remaining fields, use default fixation. */
@@ -1672,8 +1664,6 @@ GstClockTime gst_pw_audio_format_calculate_duration_from_num_frames(GstPwAudioFo
 			GstPipewireEncodedAudioInfo const *info = &(pw_audio_format->info.encoded_audio_info);
 			return gst_util_uint64_scale_int(num_frames, GST_SECOND, info->rate);
 		}
-
-		// TODO: Add code for more non-PCM types here
 
 		default:
 			return 0;

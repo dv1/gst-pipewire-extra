@@ -23,7 +23,13 @@
  */
 
 #include <gst/gst.h>
+/* Turn off -Wdeprecated-declarations to mask the "g_memdup is deprecated"
+ * warning (originating in gst/base/gstbytereader.h) that is present in
+ * many GStreamer installations. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #include <gst/base/base.h>
+#pragma GCC diagnostic pop
 #include <gst/audio/audio.h>
 #include "gstpwaudioringbuffer.h"
 
