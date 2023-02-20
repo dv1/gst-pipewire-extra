@@ -77,7 +77,6 @@ enum
 	PROP_STREAM_PROPERTIES,
 	PROP_SOCKET_FD,
 	PROP_RING_BUFFER_LENGTH,
-	PROP_MAX_ENCODED_DATA_QUEUE_LENGTH,
 	PROP_APP_NAME,
 	PROP_NODE_NAME,
 	PROP_NODE_DESCRIPTION,
@@ -94,7 +93,6 @@ enum
 #define DEFAULT_STREAM_PROPERTIES NULL
 #define DEFAULT_SOCKET_FD (-1)
 #define DEFAULT_RING_BUFFER_LENGTH 100
-#define DEFAULT_MAX_ENCODED_DATA_QUEUE_LENGTH 2
 #define DEFAULT_APP_NAME NULL
 #define DEFAULT_NODE_NAME NULL
 #define DEFAULT_NODE_DESCRIPTION NULL
@@ -129,7 +127,6 @@ struct _GstPwAudioSink
 	GstStructure *stream_properties;
 	int socket_fd;
 	guint ring_buffer_length_in_ms;
-	guint max_encoded_data_queue_length;
 	gchar *app_name;
 	gchar *node_name;
 	gchar *node_description;
@@ -157,6 +154,7 @@ struct _GstPwAudioSink
 	GMutex audio_data_buffer_mutex;
 	GCond audio_data_buffer_cond;
 	GstQueueArray *encoded_data_queue;
+	GstClockTime total_queued_encoded_data_duration;
 
 	/** PCM clock drift compensation states **/
 
@@ -270,7 +268,6 @@ struct _GstPwAudioSink
 	 * eliminates the need for a mutex lock. */
 	GstClockTimeDiff skew_threshold_snapshot;
 	GstClockTime ring_buffer_length_snapshot;
-	guint max_encoded_data_queue_length_snapshot;
 };
 
 
@@ -509,19 +506,6 @@ static void gst_pw_audio_sink_class_init(GstPwAudioSinkClass *klass)
 
 	g_object_class_install_property(
 		object_class,
-		PROP_MAX_ENCODED_DATA_QUEUE_LENGTH,
-		g_param_spec_uint(
-			"max-encoded-data-queue-length",
-			"Maximum encoded data queue length",
-			"How many buffers with encoded data frames can be queued at most before upstream is blocked",
-			1, G_MAXUINT,
-			DEFAULT_MAX_ENCODED_DATA_QUEUE_LENGTH,
-			(GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)
-		)
-	);
-
-	g_object_class_install_property(
-		object_class,
 		PROP_APP_NAME,
 		g_param_spec_string(
 			"app-name",
@@ -586,7 +570,6 @@ static void gst_pw_audio_sink_init(GstPwAudioSink *self)
 	self->stream_properties = DEFAULT_STREAM_PROPERTIES;
 	self->socket_fd = DEFAULT_SOCKET_FD;
 	self->ring_buffer_length_in_ms = DEFAULT_RING_BUFFER_LENGTH;
-	self->max_encoded_data_queue_length = DEFAULT_MAX_ENCODED_DATA_QUEUE_LENGTH;
 	self->app_name = g_strdup(DEFAULT_APP_NAME);
 	self->node_name = g_strdup(DEFAULT_NODE_NAME);
 	self->node_description = g_strdup(DEFAULT_NODE_DESCRIPTION);
@@ -602,6 +585,7 @@ static void gst_pw_audio_sink_init(GstPwAudioSink *self)
 	g_mutex_init(&(self->audio_data_buffer_mutex));
 	g_cond_init(&(self->audio_data_buffer_cond));
 	self->encoded_data_queue = NULL;
+	self->total_queued_encoded_data_duration = 0;
 
 	pi_controller_init(&(self->pi_controller), PI_CONTROLLER_KI_FACTOR, PI_CONTROLLER_KP_FACTOR);
 	gst_pw_audio_sink_reset_drift_compensation_states(self);
@@ -730,12 +714,6 @@ static void gst_pw_audio_sink_set_property(GObject *object, guint prop_id, GValu
 			GST_OBJECT_UNLOCK(self);
 			break;
 
-		case PROP_MAX_ENCODED_DATA_QUEUE_LENGTH:
-			GST_OBJECT_LOCK(self);
-			self->max_encoded_data_queue_length = g_value_get_uint(value);
-			GST_OBJECT_UNLOCK(self);
-			break;
-
 		case PROP_APP_NAME:
 			GST_OBJECT_LOCK(self);
 			g_free(self->app_name);
@@ -813,12 +791,6 @@ static void gst_pw_audio_sink_get_property(GObject *object, guint prop_id, GValu
 		case PROP_RING_BUFFER_LENGTH:
 			GST_OBJECT_LOCK(self);
 			g_value_set_uint(value, self->ring_buffer_length_in_ms);
-			GST_OBJECT_UNLOCK(self);
-			break;
-
-		case PROP_MAX_ENCODED_DATA_QUEUE_LENGTH:
-			GST_OBJECT_LOCK(self);
-			g_value_set_uint(value, self->max_encoded_data_queue_length);
 			GST_OBJECT_UNLOCK(self);
 			break;
 
@@ -1492,7 +1464,6 @@ static gboolean gst_pw_audio_sink_start(GstBaseSink *basesink)
 	socket_fd = self->socket_fd;
 	self->skew_threshold_snapshot = self->skew_threshold;
 	self->ring_buffer_length_snapshot = self->ring_buffer_length_in_ms * GST_MSECOND;
-	self->max_encoded_data_queue_length_snapshot = self->max_encoded_data_queue_length;
 
 	self->pipewire_core = gst_pipewire_core_get(socket_fd);
 	g_assert(self->pipewire_core != NULL);
@@ -1626,7 +1597,6 @@ static gboolean gst_pw_audio_sink_stop(GstBaseSink *basesink)
 	self->last_pw_time_ticks = 0;
 	self->last_pw_time_ticks_set = FALSE;
 	self->skew_threshold_snapshot = 0;
-	self->max_encoded_data_queue_length_snapshot = 0;
 
 	return TRUE;
 }
@@ -2246,8 +2216,6 @@ static GstFlowReturn gst_pw_audio_sink_render_encoded(GstPwAudioSink *self, GstB
 
 	while (TRUE)
 	{
-		guint num_queued_frames;
-
 		if (g_atomic_int_get(&(self->flushing)))
 		{
 			GST_DEBUG_OBJECT(self, "exiting loop in render function since we are flushing");
@@ -2265,25 +2233,27 @@ static GstFlowReturn gst_pw_audio_sink_render_encoded(GstPwAudioSink *self, GstB
 				goto finish;
 		}
 
-		num_queued_frames = gst_queue_array_get_length(self->encoded_data_queue);
-
-		if (num_queued_frames < self->max_encoded_data_queue_length_snapshot)
+		/* In some cases, we can reach this point _before_ the quantum size is known.
+		 * Just push data then. This state won't last very long, so as soon as the
+		 * quantum_size_in_ns is nonzero, we actually limit the max queue size based
+		 * on that nonzero value. */
+		if ((quantum_size_in_ns == 0) || (self->total_queued_encoded_data_duration < quantum_size_in_ns))
 		{
 			GST_LOG_OBJECT(
 				self,
-				"encoded data queue has room for another frame (%u queued, limit is %u); pushing",
-				num_queued_frames,
-				self->max_encoded_data_queue_length_snapshot
+				"encoded data queue has room for more data (duration of queued data; %" GST_TIME_FORMAT " - less than one quantum); pushing",
+				GST_TIME_ARGS(self->total_queued_encoded_data_duration)
 			);
 			gst_queue_array_push_tail(self->encoded_data_queue, gst_buffer_ref(original_incoming_buffer));
+			self->total_queued_encoded_data_duration += frame_duration;
 			goto finish;
 		}
 		else
 		{
 			GST_LOG_OBJECT(
 				self,
-				"encoded data queue has no room for frame (queue limit is %u frame(s)); waiting",
-				self->max_encoded_data_queue_length_snapshot
+				"encoded data queue has no room for more data (duration of queued data; %" GST_TIME_FORMAT " - >= one quantum); waiting",
+				GST_TIME_ARGS(self->total_queued_encoded_data_duration)
 			);
 			g_cond_wait(&(self->audio_data_buffer_cond), &(self->audio_data_buffer_mutex));
 		}
@@ -2455,6 +2425,7 @@ static void gst_pw_audio_sink_setup_audio_data_buffer(GstPwAudioSink *self)
 	{
 		self->encoded_data_queue = gst_queue_array_new(0);
 		gst_queue_array_set_clear_func(self->encoded_data_queue, (GDestroyNotify)gst_buffer_unref);
+		self->total_queued_encoded_data_duration = 0;
 	}
 }
 
@@ -3188,54 +3159,82 @@ static void gst_pw_audio_sink_encoded_on_process_stream(void *data)
 
 	LOCK_AUDIO_DATA_BUFFER_MUTEX(self);
 
+	/* Here, we want to get a quantum's worth of data. Also, if we already send an excess amount
+	 * of data, and that excess amount reached a quantum's worth, we skip this cycle to prevent
+	 * an overflow from happening. */
 	if (self->accum_excess_encaudio_playtime >= self->quantum_size_in_ns)
 	{
 		GST_LOG_OBJECT(self, "producing null frame to compensate for excess playtime");
 		frame = NULL;
 		self->accum_excess_encaudio_playtime -= self->quantum_size_in_ns;
 	}
+	else if (self->total_queued_encoded_data_duration < self->quantum_size_in_ns)
+	{
+		GST_LOG_OBJECT(
+			self,
+			"insufficient data queued (need at least 1 quantum's worth of queued data; queued: %" GST_TIME_FORMAT " ns); producing null frame",
+			GST_TIME_ARGS(self->total_queued_encoded_data_duration)
+		);
+		frame = NULL;
+	}
 	else
 	{
-		if (gst_queue_array_get_length(self->encoded_data_queue) > 0)
-		{
-			frame = gst_queue_array_pop_head(self->encoded_data_queue);
-			GST_LOG_OBJECT(self, "got frame from encoded data queue");
-			/* Signal that there is now room in the queue for new data.
-			 * Potentially needed if the g_cond_wait() call in
-			 * gst_pw_audio_sink_render_encoded() is blocking. */
-			g_cond_signal(&(self->audio_data_buffer_cond));
-		}
-		else
-		{
-			GST_WARNING_OBJECT(self, "attempted to get data from queue but it is empty; producing null frame");
-			frame = NULL;
-		}
-	}
-
-	if (frame != NULL)
-	{
-		GstClockTime frame_duration;
 		GstMapInfo map_info;
-
-		gst_buffer_map(frame, &map_info, GST_MAP_READ);
+		GstClockTime accumulated_duration = 0;
 
 		inner_spa_data->chunk->offset = 0;
 		inner_spa_data->chunk->stride = 1;
-		inner_spa_data->chunk->size = map_info.size;
+		inner_spa_data->chunk->size = 0;
 
-		memcpy(inner_spa_data->data, map_info.data, map_info.size);
-
-		gst_buffer_unmap(frame, &map_info);
-
-		frame_duration = GST_BUFFER_DURATION(frame);
-
-		if (frame_duration > self->quantum_size_in_ns)
+		/* At this point, we know that (a) we can send data to the graph without
+		 * causing an overflow and (b) we've got enough data queued for one quantum.
+		 * Go through the encoded data queue and gather frames until a quantum's
+		 * worth of data is accumulated. This is particularly important if the
+		 * individual frames are smaller than the quantum; if we always sent
+		 * single frames instead of accumulating them to match a quantum's size,
+		 * underflows could constantly happen in the graph's sink (because we'd
+		 * send insufficient data for covering the quantum's duration).
+		 * To be safe, this loop also checks that the queue isn't empty.
+		 * It should not be empty, but better safe than sorry. */
+		while ((gst_queue_array_get_length(self->encoded_data_queue) > 0) && (accumulated_duration < self->quantum_size_in_ns))
 		{
-			GstClockTime excess_playtime = frame_duration - self->quantum_size_in_ns;
+			frame = gst_queue_array_pop_head(self->encoded_data_queue);
+
+			gst_buffer_map(frame, &map_info, GST_MAP_READ);
+			memcpy((guint8 *)(inner_spa_data->data) + inner_spa_data->chunk->size, map_info.data, map_info.size);
+			inner_spa_data->chunk->size += map_info.size;
+			gst_buffer_unmap(frame, &map_info);
+
+			accumulated_duration += GST_BUFFER_DURATION(frame);
+			gst_buffer_unref(frame);
+
+			GST_LOG_OBJECT(
+				self,
+				"got frame from encoded data queue with duration %" GST_TIME_FORMAT "; accumulated duration: %" GST_TIME_FORMAT,
+				GST_TIME_ARGS(GST_BUFFER_DURATION(frame)),
+				GST_TIME_ARGS(accumulated_duration)
+			);
+		}
+		GST_LOG_OBJECT(self, "got enough data for one quantum");
+
+		g_assert(self->total_queued_encoded_data_duration >= accumulated_duration);
+		self->total_queued_encoded_data_duration -= accumulated_duration;
+
+		if (accumulated_duration > self->quantum_size_in_ns)
+		{
+			GstClockTime excess_playtime = accumulated_duration - self->quantum_size_in_ns;
 			self->accum_excess_encaudio_playtime += excess_playtime;
 		}
+
+		pw_buf->size = inner_spa_data->chunk->size;
+
+		/* Signal that there is now room in the queue for new data.
+		 * Potentially needed if the g_cond_wait() call in
+		 * gst_pw_audio_sink_render_encoded() is blocking. */
+		g_cond_signal(&(self->audio_data_buffer_cond));
 	}
-	else
+
+	if (frame == NULL)
 	{
 		inner_spa_data->chunk->offset = 0;
 		inner_spa_data->chunk->stride = 0;
@@ -3244,9 +3243,6 @@ static void gst_pw_audio_sink_encoded_on_process_stream(void *data)
 	}
 
 	UNLOCK_AUDIO_DATA_BUFFER_MUTEX(self);
-
-	if (frame != NULL)
-		gst_buffer_unref(frame);
 
 finish:
 	pw_stream_queue_buffer(self->stream, pw_buf);
