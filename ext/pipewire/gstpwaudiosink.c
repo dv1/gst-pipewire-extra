@@ -2194,6 +2194,7 @@ finish:
 static GstFlowReturn gst_pw_audio_sink_render_encoded(GstPwAudioSink *self, GstBuffer *original_incoming_buffer)
 {
 	GstFlowReturn flow_ret = GST_FLOW_OK;
+	GstBaseSink *basesink = GST_BASE_SINK_CAST(self);
 	guint64 quantum_size_in_ns;
 	GstClockTime frame_duration;
 
@@ -2252,6 +2253,16 @@ static GstFlowReturn gst_pw_audio_sink_render_encoded(GstPwAudioSink *self, GstB
 			GST_DEBUG_OBJECT(self, "exiting loop in render function since we are flushing");
 			flow_ret = GST_FLOW_FLUSHING;
 			goto finish;
+		}
+
+		if (g_atomic_int_get(&(self->paused)))
+		{
+			GST_DEBUG_OBJECT(self, "sink is paused; waiting for preroll, flushing, or a state change to READY");
+
+			flow_ret = gst_base_sink_wait_preroll(basesink);
+
+			if (flow_ret != GST_FLOW_OK)
+				goto finish;
 		}
 
 		num_queued_frames = gst_queue_array_get_length(self->encoded_data_queue);
