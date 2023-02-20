@@ -2621,6 +2621,25 @@ static void gst_pw_audio_sink_pw_state_changed(void *data, enum pw_stream_state 
 		pw_stream_state_as_string(new_state),
 		(error == NULL) ? "<none>" : error
 	);
+
+	switch (new_state) {
+		case PW_STREAM_STATE_ERROR:
+		case PW_STREAM_STATE_UNCONNECTED:
+			/* Make sure the stream is now considered drained. This is important if
+			 * the pipewire server went away, because then, the sink will attempt
+			 * to drain the stream, and that request will never be answered, because
+			 * the response would come from the (now gone) server. */
+			GST_DEBUG_OBJECT(
+				self,
+				"marking stream as drained after reaching the %s state; if stream wasn't drained before, its data for sure is gone by now",
+				pw_stream_state_as_string(new_state)
+			);
+			self->stream_drained = TRUE;
+			pw_thread_loop_signal(self->pipewire_core->loop, FALSE);
+			break;
+		default:
+			break;
+	}
 }
 
 
