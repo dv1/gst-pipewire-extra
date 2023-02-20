@@ -3170,6 +3170,10 @@ static void gst_pw_audio_sink_encoded_on_process_stream(void *data)
 		{
 			frame = gst_queue_array_pop_head(self->encoded_data_queue);
 			GST_LOG_OBJECT(self, "got frame from encoded data queue");
+			/* Signal that there is now room in the queue for new data.
+			 * Potentially needed if the g_cond_wait() call in
+			 * gst_pw_audio_sink_render_encoded() is blocking. */
+			g_cond_signal(&(self->audio_data_buffer_cond));
 		}
 		else
 		{
