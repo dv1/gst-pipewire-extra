@@ -137,14 +137,14 @@ struct _GstPwAudioSink
 	GstCaps *sink_caps;
 	GstPwAudioFormat pw_audio_format;
 	GstPwAudioFormatProbe *format_probe;
+	GstPipewireDsdFormat actual_dsd_format;
 	gsize stride;
 	guint dsd_data_rate_multiplier;
-	guint dsd_conversion_buffer_size_multiplier;
+	guint dsd_buffer_size_multiplier;
 	GMutex probe_process_mutex;
 	GstCaps *cached_probed_caps;
 
 	/** Buffers for audio data **/
-
 
 	/* NOTE: Access to the these data structures and PTS & current fill level states
 	 * requires the audio_data_buffer_mutex to be locked if the pw_stream is connected.
@@ -155,6 +155,8 @@ struct _GstPwAudioSink
 	GCond audio_data_buffer_cond;
 	GstQueueArray *encoded_data_queue;
 	GstClockTime total_queued_encoded_data_duration;
+	gsize dsd_conversion_buffer_size;
+	guint8 *dsd_conversion_buffer;
 
 	/** PCM clock drift compensation states **/
 
@@ -590,6 +592,8 @@ static void gst_pw_audio_sink_init(GstPwAudioSink *self)
 	g_cond_init(&(self->audio_data_buffer_cond));
 	self->encoded_data_queue = NULL;
 	self->total_queued_encoded_data_duration = 0;
+	self->dsd_conversion_buffer_size = 0;
+	self->dsd_conversion_buffer = NULL;
 
 	pi_controller_init(&(self->pi_controller), PI_CONTROLLER_KI_FACTOR, PI_CONTROLLER_KP_FACTOR);
 	gst_pw_audio_sink_reset_drift_compensation_states(self);
@@ -2453,6 +2457,28 @@ static void gst_pw_audio_sink_setup_audio_data_buffer(GstPwAudioSink *self)
 	if (gst_pw_audio_format_data_is_raw(self->pw_audio_format.audio_type))
 	{
 		self->ring_buffer = gst_pw_audio_ring_buffer_new(&(self->pw_audio_format), self->ring_buffer_length_snapshot);
+
+		if (self->pw_audio_format.audio_type == GST_PIPEWIRE_AUDIO_TYPE_DSD)
+		{
+			/* Allocate a DSD conversion buffer that is big enough for 1 second
+			 * worth of DSD data with DSDU32BE/LE grouping formats (the biggest
+			 * ones available). This is far bigger that what's needed in the vast
+			 * majority of cases, since in PipeWire, a quantum length of more than
+			 * maybe 50-100ms is unusual, so 1s gives us plenty of headroom. */
+
+			self->dsd_conversion_buffer_size = gst_pw_audio_format_calculate_num_frames_from_duration(
+				&(self->pw_audio_format),
+				GST_SECOND * 1
+			) * self->pw_audio_format.info.dsd_audio_info.channels * 4; /* "*4" for the DSDU32 format */
+
+			GST_DEBUG_OBJECT(
+				self,
+				"allocating DSD conversion buffer with %" G_GSIZE_FORMAT " byte(s)",
+				self->dsd_conversion_buffer_size
+			);
+
+			self->dsd_conversion_buffer = g_malloc(self->dsd_conversion_buffer_size);
+		}
 	}
 	else
 	{
@@ -2476,6 +2502,9 @@ static void gst_pw_audio_sink_teardown_audio_data_buffer(GstPwAudioSink *self)
 		gst_queue_array_free(self->encoded_data_queue);
 		self->encoded_data_queue = NULL;
 	}
+
+	g_free(self->dsd_conversion_buffer);
+	self->dsd_conversion_buffer = NULL;
 }
 
 
@@ -2687,28 +2716,34 @@ static void gst_pw_audio_sink_param_changed(void *data, uint32_t id, const struc
 	}
 
 	/* See the gst_pw_audio_format_get_stride() documentation for an
-	 * explanation why dsd_conversion_buffer_size_multiplier is needed. */
+	 * explanation why dsd_buffer_size_multiplier is needed. */
 	if (changed_pw_audio_format.audio_type == GST_PIPEWIRE_AUDIO_TYPE_DSD)
 	{
-		guint input_dsd_format_width = gst_pipewire_dsd_format_get_width(self->pw_audio_format.info.dsd_audio_info.format);
-		guint graph_dsd_format_width = gst_pipewire_dsd_format_get_width(changed_pw_audio_format.info.dsd_audio_info.format);
+		GstPipewireDsdFormat input_dsd_format = self->pw_audio_format.info.dsd_audio_info.format;
+		GstPipewireDsdFormat graph_dsd_format = changed_pw_audio_format.info.dsd_audio_info.format;
+
+		guint input_dsd_format_width = gst_pipewire_dsd_format_get_width(input_dsd_format);
+		guint graph_dsd_format_width = gst_pipewire_dsd_format_get_width(graph_dsd_format);
+
+		self->actual_dsd_format = graph_dsd_format;
 
 		/* dsd_data_rate_multiplier is needed because the minimum necessary amount
 		 * of data that needs to be produced in the process callback depends on
-		 * dsd_conversion_buffer_size_multiplier *and* on the DSD rate. Any rate
-		 * higher than DSD64 needs an integer multiple of the indicated quantum size. */
+		 * dsd_buffer_size_multiplier *and* on the DSD rate. Any rate higher than
+		 * DSD64 needs an integer multiple of the indicated quantum size. */
 		self->dsd_data_rate_multiplier = self->pw_audio_format.info.dsd_audio_info.rate / GST_PIPEWIRE_DSD_DSD64_BYTE_RATE;
 
 		if (graph_dsd_format_width > input_dsd_format_width)
-			self->dsd_conversion_buffer_size_multiplier = graph_dsd_format_width / input_dsd_format_width;
+			self->dsd_buffer_size_multiplier = graph_dsd_format_width / input_dsd_format_width;
 		else
-			self->dsd_conversion_buffer_size_multiplier = 1;
+			self->dsd_buffer_size_multiplier = 1;
 
 		GST_DEBUG_OBJECT(
 			self,
-			"additional DSD information:  input/graph DSD format width: %u/%u  conversion buffer size multiplier: %u  data rate multiplier: %u",
+			"additional DSD information:  input/graph DSD format: %s/%s  input/graph DSD format width: %u/%u  buffer size multiplier: %u  data rate multiplier: %u",
+			gst_pipewire_dsd_format_to_string(input_dsd_format), gst_pipewire_dsd_format_to_string(graph_dsd_format),
 			input_dsd_format_width, graph_dsd_format_width,
-			self->dsd_conversion_buffer_size_multiplier,
+			self->dsd_buffer_size_multiplier,
 			self->dsd_data_rate_multiplier
 		);
 	}
@@ -2964,7 +2999,7 @@ static void gst_pw_audio_sink_raw_on_process_stream(void *data)
 			// the "2" may be related to the number of channels.
 			num_frames_to_produce = self->spa_rate_match->size
 			                      * self->dsd_data_rate_multiplier
-			                      * self->dsd_conversion_buffer_size_multiplier
+			                      * self->dsd_buffer_size_multiplier
 			                      * 2;
 			break;
 
@@ -3006,21 +3041,99 @@ static void gst_pw_audio_sink_raw_on_process_stream(void *data)
 					GST_TIME_ARGS(upstream_pipeline_latency)
 				);
 
-				// TODO: use gst_pipewire_dsd_convert() if necessary
-				/* We use both upstream_pipeline_latency and time_since_delay_measurement
-				 * for the PTS shift quantity. The former is necessary to compensate for
-				 * the upstream pipeline latency. The latter is necessary to retrieve data
-				 * from a moment that corresponds to the scheduled beginning of this
-				 * pipewire graph tick. */
-				retrieval_result = gst_pw_audio_ring_buffer_retrieve_frames(
-					self->ring_buffer,
-					inner_spa_data->data,
-					num_frames_to_produce,
-					current_time,
-					upstream_pipeline_latency + time_since_delay_measurement,
-					effective_skew_threshold,
-					&buffered_frames_to_retrieval_pts_delta
-				);
+				if ((self->pw_audio_format.audio_type == GST_PIPEWIRE_AUDIO_TYPE_DSD)
+				 && (self->pw_audio_format.info.dsd_audio_info.format != self->actual_dsd_format))
+				{
+					/* If we reach this point, it means we have incoming DSD data
+					 * that can't directly be passed to the graph, because the latter
+					 * uses a different grouping format. We have to converr the data
+					 * first. Retrieve incoming DSD frames from the ring buffer and
+					 * store them in the intermediate "DSD conversion buffer". Then,
+					 * use that buffer as the source and the SPA data chunk as the
+					 * destination for the conversion.
+					 *
+					 * The frame counts can be confusing, because they depend on the
+					 * DSD format. The same playtime that is covered by 20 DSDU8
+					 * frames is also coverd by 10 DSDU16LE frames for example.
+					 * Here, we deal with _input_ format widths and strides, because
+					 * that's what is passed around until the very end, when the
+					 * actual conversion takes place. */
+
+					GstPipewireDsdFormat input_dsd_format = self->pw_audio_format.info.dsd_audio_info.format;
+					GstPipewireDsdFormat graph_dsd_format = self->actual_dsd_format;
+					guint input_dsd_format_width = gst_pipewire_dsd_format_get_width(input_dsd_format);
+					guint input_dsd_format_stride = input_dsd_format_width * self->pw_audio_format.info.dsd_audio_info.channels;
+
+					/* To avoid buffer overflows, check how many input DSD frames can
+					 * fit in the DSD conversion buffer. */
+					guint64 max_num_input_frames_in_conv_buffer = self->dsd_conversion_buffer_size / input_dsd_format_stride;
+					/* Counter for many DSD frames were retrieved and converted in the loop. */
+					guint64 num_produced_frames;
+
+					guint8 *dest_start_ptr = (guint8 *)(inner_spa_data->data);
+					guint8 *dest_ptr = (guint8 *)(inner_spa_data->data);
+
+					for (num_produced_frames = 0;  num_produced_frames < num_frames_to_produce;)
+					{
+						guint64 num_frames_left_to_produce = num_frames_to_produce - num_produced_frames;
+
+						/* Apply limit in case there are more frames to retrieve
+						 * than what the DSD conversion buffer can handle. */
+						guint64 num_frames_to_convert = MIN(max_num_input_frames_in_conv_buffer, num_frames_left_to_produce);
+
+						gsize num_conv_output_bytes = num_frames_to_convert * input_dsd_format_stride;
+
+						GST_LOG_OBJECT(
+							self,
+							"converting DSD frames: num produced / num to produce: %" G_GUINT64_FORMAT "/%" G_GUINT64_FORMAT "; "
+							"now converting %" G_GUINT64_FORMAT,
+							num_produced_frames, num_frames_to_produce,
+							num_frames_to_convert
+						);
+
+						g_assert((dest_ptr - dest_start_ptr) <= inner_spa_data->maxsize);
+						g_assert(num_conv_output_bytes <= self->dsd_conversion_buffer_size);
+
+						retrieval_result = gst_pw_audio_ring_buffer_retrieve_frames(
+							self->ring_buffer,
+							self->dsd_conversion_buffer,
+							num_frames_to_convert,
+							current_time,
+							upstream_pipeline_latency + time_since_delay_measurement,
+							effective_skew_threshold,
+							&buffered_frames_to_retrieval_pts_delta
+						);
+
+						gst_pipewire_dsd_convert(
+							self->dsd_conversion_buffer,
+							dest_ptr,
+							input_dsd_format,
+							graph_dsd_format,
+							num_conv_output_bytes,
+							self->pw_audio_format.info.dsd_audio_info.channels
+						);
+
+						dest_ptr += num_conv_output_bytes;
+						num_produced_frames += num_frames_to_convert;
+					}
+				}
+				else
+				{
+					/* We use both upstream_pipeline_latency and time_since_delay_measurement
+					 * for the PTS shift quantity. The former is necessary to compensate for
+					 * the upstream pipeline latency. The latter is necessary to retrieve data
+					 * from a moment that corresponds to the scheduled beginning of this
+					 * pipewire graph tick. */
+					retrieval_result = gst_pw_audio_ring_buffer_retrieve_frames(
+						self->ring_buffer,
+						inner_spa_data->data,
+						num_frames_to_produce,
+						current_time,
+						upstream_pipeline_latency + time_since_delay_measurement,
+						effective_skew_threshold,
+						&buffered_frames_to_retrieval_pts_delta
+					);
+				}
 
 				inner_spa_data->chunk->offset = 0;
 				inner_spa_data->chunk->size = num_frames_to_produce * self->stride;
