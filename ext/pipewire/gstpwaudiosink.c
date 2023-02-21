@@ -2264,7 +2264,9 @@ static GstFlowReturn gst_pw_audio_sink_render_encoded(GstPwAudioSink *self, GstB
 		{
 			GST_DEBUG_OBJECT(self, "sink is paused; waiting for preroll, flushing, or a state change to READY");
 
+			UNLOCK_AUDIO_DATA_BUFFER_MUTEX(self);
 			flow_ret = gst_base_sink_wait_preroll(basesink);
+			LOCK_AUDIO_DATA_BUFFER_MUTEX(self);
 
 			if (flow_ret != GST_FLOW_OK)
 				goto finish;
