@@ -215,6 +215,10 @@ struct _GstPwAudioSink
 	 * function can produce "null frames" at appropriate times to compensate for the
 	 * excess playtime, avoiding an overflow in the PipeWire sink. */
 	GstClockTime accum_excess_encaudio_playtime;
+	/* This is used for determining when the pw_stream's latency property needs an
+	 * update. The unit is _not_ nanoseconds; rather, it uses rate ticks (rate as in
+	 * the rate field in pw_audio_format.info.encoded_audio_info.rate). */
+	guint64 last_encoded_frame_length;
 
 	/** Element clock **/
 
@@ -1205,6 +1209,35 @@ static gboolean gst_pw_audio_sink_set_caps(GstBaseSink *basesink, GstCaps *caps)
 	self->stream_is_connected = TRUE;
 	self->sink_caps = gst_caps_ref(caps);
 
+	self->last_encoded_frame_length = 0;
+
+	/* Set the audio's rate as the pw rate property if this is an encoded stream.
+	 * This can help with tuning the quantum to better fit encoded frame lengths.
+	 * (Raw audio can be subdivided freely to perfectly fit any quantum length,
+	 * so this logic isn't really necessary for those audio types.)
+	 * Also, remove the latency property in case there's one left over from
+	 * a previous stream. */
+	{
+		gchar *rate_str = NULL;
+		struct spa_dict_item items[2];
+
+		items[0] = SPA_DICT_ITEM_INIT(PW_KEY_NODE_LATENCY, NULL);
+
+		if (gst_pw_audio_format_data_is_raw(self->pw_audio_format.audio_type))
+		{
+			items[1] = SPA_DICT_ITEM_INIT(PW_KEY_NODE_RATE, NULL);
+		}
+		else
+		{
+			guint rate = self->pw_audio_format.info.encoded_audio_info.rate;
+			rate_str = g_strdup_printf("1/%u", rate);
+			items[1] = SPA_DICT_ITEM_INIT(PW_KEY_NODE_RATE, rate_str);
+		}
+
+		pw_stream_update_properties(self->stream, &SPA_DICT_INIT(items, 2));
+		g_free(rate_str);
+	}
+
 	gst_pw_audio_sink_setup_audio_data_buffer(self);
 
 	gst_pw_audio_sink_activate_stream_unlocked(self, TRUE);
@@ -2176,6 +2209,8 @@ static GstFlowReturn gst_pw_audio_sink_render_encoded(GstPwAudioSink *self, GstB
 	GstBaseSink *basesink = GST_BASE_SINK_CAST(self);
 	guint64 quantum_size_in_ns;
 	GstClockTime frame_duration;
+	guint rate;
+	guint frame_length;
 
 	GST_LOG_OBJECT(self, "incoming buffer: %" GST_PTR_FORMAT, (gpointer)original_incoming_buffer);
 
@@ -2190,35 +2225,24 @@ static GstFlowReturn gst_pw_audio_sink_render_encoded(GstPwAudioSink *self, GstB
 	quantum_size_in_ns = self->quantum_size_in_ns;
 	pw_thread_loop_unlock(self->pipewire_core->loop);
 
-	if (frame_duration < quantum_size_in_ns)
+	rate = self->pw_audio_format.info.encoded_audio_info.rate;
+	frame_length = gst_util_uint64_scale_round(frame_duration, rate, GST_SECOND);
+
+	if (self->last_encoded_frame_length != frame_length)
 	{
-		struct spa_dict_item items[2];
-		gchar *rate_str, *latency_str;
-		guint rate;
-		guint buffer_length;
+		struct spa_dict_item items[1];
+		gchar *latency_str;
 
-		rate = self->pw_audio_format.info.encoded_audio_info.rate;
-		buffer_length = gst_util_uint64_scale_round(frame_duration, rate, GST_SECOND);
+		latency_str = g_strdup_printf("%u/%u", frame_length, rate);
 
-		GST_INFO_OBJECT(
-			self,
-			"got an encoded audio frame whose length (%" GST_TIME_FORMAT ") is"
-			"smaller than the current quantum's (%" GST_TIME_FORMAT "); updating"
-			"the stream's latency and rate properties to request a smaller quantum",
-			GST_TIME_ARGS(quantum_size_in_ns),
-			GST_TIME_ARGS(frame_duration)
-		);
+		items[0] = SPA_DICT_ITEM_INIT(PW_KEY_NODE_LATENCY, latency_str);
+		pw_stream_update_properties(self->stream, &SPA_DICT_INIT(items, 1));
 
-		rate_str = g_strdup_printf("1/%u", rate);
-		latency_str = g_strdup_printf("%u/%u", buffer_length, rate);
+		GST_INFO_OBJECT(self, "updating pw stream latency to %s", latency_str);
 
-		items[0] = SPA_DICT_ITEM_INIT(PW_KEY_NODE_RATE, rate_str);
-		items[1] = SPA_DICT_ITEM_INIT(PW_KEY_NODE_LATENCY, latency_str);
-
-		g_free(rate_str);
 		g_free(latency_str);
 
-		pw_stream_update_properties(self->stream, &SPA_DICT_INIT(items, 2));
+		self->last_encoded_frame_length = frame_length;
 	}
 
 	LOCK_AUDIO_DATA_BUFFER_MUTEX(self);
