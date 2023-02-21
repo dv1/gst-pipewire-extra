@@ -1224,41 +1224,36 @@ static GstCaps* gst_pw_audio_sink_get_caps(GstBaseSink *basesink, GstCaps *filte
 {
 	GstPwAudioSink *self = GST_PW_AUDIO_SINK(basesink);
 	GstCaps *available_sinkcaps = NULL;
-	gboolean core_is_ready;
+	gboolean cache_probed_caps;
+	uint32_t target_object_id;
+	gboolean cancelled = FALSE;
 
 	GST_DEBUG_OBJECT(self, "new get-caps query");
 
 	GST_OBJECT_LOCK(self);
-	if (self->cache_probed_caps && (self->cached_probed_caps != NULL))
-		available_sinkcaps = gst_caps_ref(self->cached_probed_caps);
-	core_is_ready = (self->pipewire_core != NULL);
+	cache_probed_caps = self->cache_probed_caps;
+	target_object_id = self->target_object_id;
 	GST_OBJECT_UNLOCK(self);
 
-	if (available_sinkcaps != NULL)
+	/* get_caps() may get called simultaneously by different threads.
+	 * It is not a good idea to let the probing happen concurrently.
+	 * Use a mutex to prevent probing attempts from ever running at the
+	 * same time. (The GstPwAudioFormatProbe's setup, teardown, and
+	 * probe calls themselves are MT safe, but this does not help here. */
+	g_mutex_lock(&(self->probe_process_mutex));
+
+	if (self->cached_probed_caps != NULL)
 	{
+		available_sinkcaps = gst_caps_ref(self->cached_probed_caps);
 		GST_DEBUG_OBJECT(self, "using cached probed caps as available caps: %" GST_PTR_FORMAT, (gpointer)available_sinkcaps);
+		goto finish;
 	}
-	else if (core_is_ready)
+
+	if (self->pipewire_core != NULL)
 	{
 		gint audio_type;
-		uint32_t target_object_id;
-		gboolean cancelled = FALSE;
 
 		GST_DEBUG_OBJECT(self, "probing PipeWire graph for available caps");
-
-		/* Take the object lock in case the target_object_id GObject
-		 * property is modified at the same time by a different thread
-		 * while this function is running. */
-		GST_OBJECT_LOCK(self);
-		target_object_id = self->target_object_id;
-		GST_OBJECT_UNLOCK(self);
-
-		/* get_caps() may get called simultaneously by different threads.
-		 * It is not a good idea to let the probing happen concurrently.
-		 * Use a mutex to prevent probing attempts from ever running at the
-		 * same time. (The GstPwAudioFormatProbe's setup, teardown, and
-		 * probe calls themselves are MT safe, but this does not help here. */
-		g_mutex_lock(&(self->probe_process_mutex));
 
 		available_sinkcaps = gst_caps_new_empty();
 
@@ -1269,7 +1264,12 @@ static GstCaps* gst_pw_audio_sink_get_caps(GstBaseSink *basesink, GstCaps *filte
 			GstPwAudioFormatProbeResult probing_result;
 			GstPwAudioFormat *probed_details = NULL;
 
-			probing_result = gst_pw_audio_format_probe_probe_audio_type(self->format_probe, audio_type, target_object_id, &probed_details);
+			probing_result = gst_pw_audio_format_probe_probe_audio_type(
+				self->format_probe,
+				audio_type,
+				target_object_id,
+				&probed_details
+			);
 
 			switch (probing_result)
 			{
@@ -1351,29 +1351,28 @@ static GstCaps* gst_pw_audio_sink_get_caps(GstBaseSink *basesink, GstCaps *filte
 
 		gst_pw_audio_format_probe_teardown(self->format_probe);
 
-		g_mutex_unlock(&(self->probe_process_mutex));
-
-		if (cancelled)
-		{
-			/* In case of cancellation discard the partial caps result and just return
-			 * the template caps. We aren't going to play anything anyway, since
-			 * cancellation happens during the PAUSED->READY state change. By returning
-			 * the template caps we at least remain deterministic in what we return
-			 * in the cancellation case. */
-			GST_DEBUG_OBJECT(self, "returning template caps after pw format probing got cancelled");
-			gst_caps_unref(available_sinkcaps);
-			return gst_pw_audio_format_get_template_caps();
-		}
-
-		GST_OBJECT_LOCK(self);
-		if (self->cache_probed_caps)
+		if (cache_probed_caps)
 			gst_caps_replace(&(self->cached_probed_caps), available_sinkcaps);
-		GST_OBJECT_UNLOCK(self);
 	}
 	else
 	{
 		available_sinkcaps = gst_pw_audio_format_get_template_caps();
 		GST_DEBUG_OBJECT(self, "using template caps as available caps");
+	}
+
+finish:
+	g_mutex_unlock(&(self->probe_process_mutex));
+
+	if (cancelled)
+	{
+		/* In case of cancellation discard the partial caps result and just return
+		 * the template caps. We aren't going to play anything anyway, since
+		 * cancellation happens during the PAUSED->READY state change. By returning
+		 * the template caps we at least remain deterministic in what we return
+		 * in the cancellation case. */
+		GST_DEBUG_OBJECT(self, "returning template caps after pw format probing got cancelled");
+		gst_caps_unref(available_sinkcaps);
+		return gst_pw_audio_format_get_template_caps();
 	}
 
 	if (filter != NULL)
@@ -1557,20 +1556,30 @@ static gboolean gst_pw_audio_sink_stop(GstBaseSink *basesink)
 		self->stream = NULL;
 	}
 
-	if (self->format_probe != NULL)
+	/* Perform these teardown steps with the probe_process_mutex
+	 * locked, since caps queries can happen simultaneously,
+	 * and those trigger a get_caps() call. get_caps() accesses
+	 * these same resources we are tearing down here. */
 	{
-		gst_pw_audio_format_probe_teardown(self->format_probe);
-		gst_object_unref(GST_OBJECT(self->format_probe));
-		self->format_probe = NULL;
-	}
+		g_mutex_lock(&(self->probe_process_mutex));
 
-	gst_caps_replace(&(self->cached_probed_caps), NULL);
+		if (self->format_probe != NULL)
+		{
+			gst_pw_audio_format_probe_teardown(self->format_probe);
+			gst_object_unref(GST_OBJECT(self->format_probe));
+			self->format_probe = NULL;
+		}
 
-	if (self->pipewire_core != NULL)
-	{
-		GST_DEBUG_OBJECT(self, "releasing PipeWire core");
-		gst_pipewire_core_release(self->pipewire_core);
-		self->pipewire_core = NULL;
+		gst_caps_replace(&(self->cached_probed_caps), NULL);
+
+		if (self->pipewire_core != NULL)
+		{
+			GST_DEBUG_OBJECT(self, "releasing PipeWire core");
+			gst_pipewire_core_release(self->pipewire_core);
+			self->pipewire_core = NULL;
+		}
+
+		g_mutex_unlock(&(self->probe_process_mutex));
 	}
 
 	gst_pw_stream_clock_reset(self->stream_clock);
