@@ -2813,22 +2813,31 @@ static void gst_pw_audio_sink_io_changed(void *data, uint32_t id, void *area, G_
 			 * that if for example rate is 1.1, then 110% of the normal amount of data is generated.
 			 * So, if the audio output is falling behind the reference signal, rate needs to be >1.0,
 			 * and if it is ahead of the reference signal, it needs to be <1.0. The rate field can be
-			 * set in the process callback (see gst_pw_audio_sink_raw_on_process_stream). */
+			 * set in the process callback (see gst_pw_audio_sink_raw_on_process_stream).
+			 * The rate match pointer can be NULL if no rate matching is available, for example,
+			 * because this is a passthrough stream. */
 
 			self->spa_rate_match = (struct spa_io_rate_match *)area;
 
-			if (self->stream_clock_is_pipeline_clock)
+			if (self->spa_rate_match != NULL)
 			{
-				GST_INFO_OBJECT(self, "stream clock is the pipeline clock; not enabling rate match");
-				self->spa_rate_match->flags &= ~SPA_IO_RATE_MATCH_FLAG_ACTIVE;
+				if (self->stream_clock_is_pipeline_clock)
+				{
+					GST_INFO_OBJECT(self, "stream clock is the pipeline clock; not enabling rate match");
+					self->spa_rate_match->flags &= ~SPA_IO_RATE_MATCH_FLAG_ACTIVE;
+				}
+				else
+				{
+					/* Make sure that the starting state is one without any actual sample rate conversion. */
+					self->spa_rate_match->rate = 1.0;
+
+					GST_INFO_OBJECT(self, "stream clock is not the pipeline clock; enabling rate match");
+					self->spa_rate_match->flags |= SPA_IO_RATE_MATCH_FLAG_ACTIVE;
+				}
 			}
 			else
 			{
-				/* Make sure that the starting state is one without any actual sample rate conversion. */
-				self->spa_rate_match->rate = 1.0;
-
-				GST_INFO_OBJECT(self, "stream clock is not the pipeline clock; enabling rate match");
-				self->spa_rate_match->flags |= SPA_IO_RATE_MATCH_FLAG_ACTIVE;
+				GST_DEBUG_OBJECT(self, "got NULL SPA IO rate match");
 			}
 
 			break;
@@ -2859,6 +2868,7 @@ static void gst_pw_audio_sink_raw_on_process_stream(void *data)
 	gint64 stream_delay_in_ns;
 	guint64 num_frames_to_produce;
 	gint64 time_since_delay_measurement;
+	guint64 min_num_required_ticks;
 	gboolean produce_silence_quantum = TRUE;
 
 	GST_LOG_OBJECT(self, COLOR_GREEN "new PipeWire graph tick" COLOR_DEFAULT);
@@ -2988,6 +2998,8 @@ static void gst_pw_audio_sink_raw_on_process_stream(void *data)
 		goto finish;
 	}
 
+	min_num_required_ticks = (self->spa_rate_match != NULL) ? self->spa_rate_match->size : self->quantum_size_in_ticks;
+
 	/* We are about to retrieve data from the ring buffer and
 	 * also are about to access synced_playback_started, so synchronize
 	 * access by locking the audio buffer's gstobject mutex. It is unlocked
@@ -2998,7 +3010,7 @@ static void gst_pw_audio_sink_raw_on_process_stream(void *data)
 	switch (self->pw_audio_format.audio_type)
 	{
 		case GST_PIPEWIRE_AUDIO_TYPE_PCM:
-			num_frames_to_produce = self->spa_rate_match->size;
+			num_frames_to_produce = min_num_required_ticks;
 			break;
 
 		case GST_PIPEWIRE_AUDIO_TYPE_DSD:
@@ -3007,7 +3019,7 @@ static void gst_pw_audio_sink_raw_on_process_stream(void *data)
 			// pipewire-git ("pw-cat: fix DSF playback again") applies frame scaling,
 			// so perhaps something related needs to be done here. Alternatively,
 			// the "2" may be related to the number of channels.
-			num_frames_to_produce = self->spa_rate_match->size
+			num_frames_to_produce = min_num_required_ticks
 			                      * self->dsd_data_rate_multiplier
 			                      * self->dsd_buffer_size_multiplier
 			                      * 2;
@@ -3195,7 +3207,7 @@ static void gst_pw_audio_sink_raw_on_process_stream(void *data)
 				/* If the pipeline clock and our PW stream clock are not the same, we must compensate
 				 * for a clock drift. Calculate it and a factor for compensating this drift with the
 				 * ASRC of the pw_stream. We use the PI controller for this. */
-				if ((self->pw_audio_format.audio_type == GST_PIPEWIRE_AUDIO_TYPE_PCM) && !(self->stream_clock_is_pipeline_clock))
+				if ((self->pw_audio_format.audio_type == GST_PIPEWIRE_AUDIO_TYPE_PCM) && !(self->stream_clock_is_pipeline_clock) && (self->spa_rate_match != NULL))
 				{
 					double input_ppm, filtered_ppm;
 					double rate, time_scale;
