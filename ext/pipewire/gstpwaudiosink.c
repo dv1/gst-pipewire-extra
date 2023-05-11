@@ -1561,7 +1561,9 @@ static gboolean gst_pw_audio_sink_start(GstBaseSink *basesink)
 
 	gst_pw_stream_clock_reset(self->stream_clock);
 
+	pw_thread_loop_lock(self->pipewire_core->loop);
 	self->stream = pw_stream_new(self->pipewire_core->core, stream_media_name, pw_props);
+	pw_thread_loop_unlock(self->pipewire_core->loop);
 	if (G_UNLIKELY(self->stream == NULL))
 	{
 		GST_ERROR_OBJECT(self, "could not create PipeWire stream");
@@ -1589,7 +1591,11 @@ static gboolean gst_pw_audio_sink_stop(GstBaseSink *basesink)
 	{
 		GST_DEBUG_OBJECT(self, "disconnecting and destroying PipeWire stream");
 		gst_pw_audio_sink_disconnect_stream(self);
+
+		pw_thread_loop_lock(self->pipewire_core->loop);
 		pw_stream_destroy(self->stream);
+		pw_thread_loop_unlock(self->pipewire_core->loop);
+
 		self->stream = NULL;
 	}
 
@@ -2240,7 +2246,9 @@ static GstFlowReturn gst_pw_audio_sink_render_encoded(GstPwAudioSink *self, GstB
 		latency_str = g_strdup_printf("%u/%u", frame_length, rate);
 
 		items[0] = SPA_DICT_ITEM_INIT(PW_KEY_NODE_LATENCY, latency_str);
+		pw_thread_loop_lock(self->pipewire_core->loop);
 		pw_stream_update_properties(self->stream, &SPA_DICT_INIT(items, 1));
+		pw_thread_loop_unlock(self->pipewire_core->loop);
 
 		GST_INFO_OBJECT(self, "updating pw stream latency to %s", latency_str);
 
