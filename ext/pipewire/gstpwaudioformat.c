@@ -2013,9 +2013,11 @@ void gst_pw_audio_format_probe_setup(GstPwAudioFormatProbe *pw_audio_format_prob
 		NULL
 	);
 
+	pw_thread_loop_lock(pw_audio_format_probe->core->loop);
 	pw_audio_format_probe->probing_stream = pw_stream_new(pw_audio_format_probe->core->core, stream_name, probing_stream_props);
 	g_assert(pw_audio_format_probe->probing_stream != NULL);
 	pw_stream_add_listener(pw_audio_format_probe->probing_stream, &(pw_audio_format_probe->probing_stream_listener), &probing_stream_events, pw_audio_format_probe);
+	pw_thread_loop_unlock(pw_audio_format_probe->core->loop);
 
 	g_free(stream_name);
 
@@ -2051,7 +2053,10 @@ void gst_pw_audio_format_probe_teardown(GstPwAudioFormatProbe *pw_audio_format_p
 
 	if (pw_audio_format_probe->probing_stream != NULL)
 	{
+		pw_thread_loop_lock(pw_audio_format_probe->core->loop);
 		pw_stream_destroy(pw_audio_format_probe->probing_stream);
+		pw_thread_loop_unlock(pw_audio_format_probe->core->loop);
+
 		pw_audio_format_probe->probing_stream = NULL;
 	}
 
