@@ -3036,6 +3036,13 @@ static void gst_pw_audio_sink_raw_on_process_stream(void *data)
 		self->synced_playback_started = FALSE;
 		UNLOCK_AUDIO_DATA_BUFFER_MUTEX(self);
 	}
+	else if (G_UNLIKELY(num_frames_to_produce == 0))
+	{
+		inner_spa_data->chunk->offset = 0;
+		inner_spa_data->chunk->size = 0;
+		inner_spa_data->chunk->stride = self->stride;
+		UNLOCK_AUDIO_DATA_BUFFER_MUTEX(self);
+	}
 	else
 	{
 		produce_silence_quantum = FALSE;
