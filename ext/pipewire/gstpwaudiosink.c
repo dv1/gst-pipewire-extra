@@ -1989,7 +1989,7 @@ static GstFlowReturn gst_pw_audio_sink_render_raw(GstPwAudioSink *self, GstBuffe
 				// This filters out cases of alternating discontinuities, like
 				// +1ms now -1ms next +1ms next -1ms next etc.
 
-				if (G_UNLIKELY(ABS(discontinuity) > self->alignment_threshold) || ((discontinuity != 0) && force_discontinuity_handling))
+				if (G_UNLIKELY((ABS(discontinuity) > self->alignment_threshold) || ((discontinuity != 0) && force_discontinuity_handling)))
 				{
 					/* A positive discontinuity value means that there is a gap between
 					 * this buffer and the last one. If we are playing contiguous
