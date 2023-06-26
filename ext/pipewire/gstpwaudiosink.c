@@ -1502,7 +1502,6 @@ static gboolean gst_pw_audio_sink_start(GstBaseSink *basesink)
 	self->ring_buffer_length_snapshot = self->ring_buffer_length_in_ms * GST_MSECOND;
 
 	self->pipewire_core = gst_pipewire_core_get(socket_fd);
-	g_assert(self->pipewire_core != NULL);
 
 	GST_OBJECT_UNLOCK(self);
 
