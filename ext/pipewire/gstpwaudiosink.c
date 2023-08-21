@@ -1558,8 +1558,6 @@ static gboolean gst_pw_audio_sink_start(GstBaseSink *basesink)
 
 	GST_OBJECT_UNLOCK(self);
 
-	gst_pw_stream_clock_reset(self->stream_clock);
-
 	pw_thread_loop_lock(self->pipewire_core->loop);
 	self->stream = pw_stream_new(self->pipewire_core->core, stream_media_name, pw_props);
 	pw_thread_loop_unlock(self->pipewire_core->loop);
@@ -1624,7 +1622,15 @@ static gboolean gst_pw_audio_sink_stop(GstBaseSink *basesink)
 		g_mutex_unlock(&(self->probe_process_mutex));
 	}
 
-	gst_pw_stream_clock_reset(self->stream_clock);
+	/* Recreate the stream clock. This is the only way
+	 * to fully reset _all_ internal states, including
+	 * the states of the clock base classes. */
+	if (self->stream_clock != NULL)
+	{
+		gst_object_unref(GST_OBJECT(self->stream_clock));
+		self->stream_clock = gst_pw_stream_clock_new(NULL);
+		g_assert(self->stream_clock != NULL);
+	}
 
 	gst_caps_replace(&(self->sink_caps), NULL);
 

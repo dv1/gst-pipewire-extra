@@ -130,7 +130,17 @@ static void gst_pw_stream_clock_class_init(GstPwStreamClockClass *klass)
 
 static void gst_pw_stream_clock_init(GstPwStreamClock *self)
 {
-	gst_pw_stream_clock_reset(self);
+	self->driver_clock_rate_num = 1;
+	self->driver_clock_rate_denom = 1;
+	self->previous_driver_clock_time = GST_CLOCK_TIME_NONE;
+	self->previous_system_clock_time = GST_CLOCK_TIME_NONE;
+
+	self->driver_clock_time_offset = 0;
+	self->system_clock_time_offset = 0;
+	self->base_driver_clock_time_offset = 0;
+
+	self->can_extrapolate = FALSE;
+	self->last_timestamp = 0;
 }
 
 
@@ -221,28 +231,6 @@ GstPwStreamClock* gst_pw_stream_clock_new(GstPwStreamClockGetSysclockTimeFunc ge
 	gst_object_ref_sink(GST_OBJECT(stream_clock));
 
 	return stream_clock;
-}
-
-
-void gst_pw_stream_clock_reset(GstPwStreamClock *stream_clock)
-{
-	g_assert(stream_clock != NULL);
-
-	GST_OBJECT_LOCK(stream_clock);
-
-	stream_clock->driver_clock_rate_num = 1;
-	stream_clock->driver_clock_rate_denom = 1;
-	stream_clock->previous_driver_clock_time = GST_CLOCK_TIME_NONE;
-	stream_clock->previous_system_clock_time = GST_CLOCK_TIME_NONE;
-
-	stream_clock->driver_clock_time_offset = 0;
-	stream_clock->system_clock_time_offset = 0;
-	stream_clock->base_driver_clock_time_offset = 0;
-
-	stream_clock->can_extrapolate = FALSE;
-	stream_clock->last_timestamp = 0;
-
-	GST_OBJECT_UNLOCK(stream_clock);
 }
 
 

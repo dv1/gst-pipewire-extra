@@ -75,26 +75,13 @@ GType gst_pw_stream_clock_get_type(void);
 GstPwStreamClock* gst_pw_stream_clock_new(GstPwStreamClockGetSysclockTimeFunc get_sysclock_time_func);
 
 /**
- * gst_pw_stream_clock_reset:
- * @stream_clock The #GstPwStreamClock.
- *
- * Fully resets the internal states of the clock to their initial values.
- * This is useful for when a GStreamer element that uses this clock is set
- * to a READY or NULL state.
- */
-void gst_pw_stream_clock_reset(GstPwStreamClock *stream_clock);
-
-/**
- * gst_pw_stream_clock_reset:
+ * gst_pw_stream_clock_freeze:
  * @stream_clock The #GstPwStreamClock.
  *
  * "Freezes" the clock, causing it to return the last produced value constantly,
  * until gst_pw_stream_clock_add_observation() is called again, after which
  * the clock produces timestamps normally again (without a jump in the produced
  * timestamps). This is useful during pw_stream reconfigurations.
- *
- * Note that the gst_pw_stream_clock_reset() implies that the clock is frozen,
- * so calling this function directly after a reset is redundant.
  */
 void gst_pw_stream_clock_freeze(GstPwStreamClock *stream_clock);
 
@@ -109,8 +96,8 @@ void gst_pw_stream_clock_freeze(GstPwStreamClock *stream_clock);
  * this function as the observation.
  *
  * This function un-freezes a clock after it got frozen by a gst_pw_stream_clock_freeze()
- * or gst_pw_stream_clock_reset() call (the clock is also frozen right after
- * creating it, and that too is undone by this function).
+ * call. The clock is also frozen right after creating it, and that too is undone
+ * by this function.
  */
 void gst_pw_stream_clock_add_observation(GstPwStreamClock *stream_clock, struct pw_time const *observation);
 
