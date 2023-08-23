@@ -536,7 +536,7 @@ static void gst_pw_audio_sink_class_init(GstPwAudioSinkClass *klass)
 
 	g_object_class_install_property(
 		object_class,
-		PROP_NODE_NAME,
+		PROP_NODE_DESCRIPTION,
 		g_param_spec_string(
 			"node-description",
 			"Node description",
