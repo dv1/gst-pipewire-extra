@@ -150,6 +150,26 @@ gsize gst_pw_audio_ring_buffer_push_frames(
 	g_assert(frames != NULL);
 	g_assert(num_frames > 0);
 
+	/* Prepending silence frames is required when there is a gap in the
+	 * timestamped data, for example, when gstbuffer #1 comes into the
+	 * sink with PTS 100000 duration 50000, and gstbuffer #2 comes in
+	 * with PTS 170000, even though that second buffer's PTS should have
+	 * been 100000+50000 = 150000. In such a case, a gap of 20000 ns would
+	 * be inserted. (In practice, gaps are much larger than that, but we
+	 * use small quantities for sake of clarity in this example.) However,
+	 * when the ring buffer is empty, there is no such discontinuity,
+	 * since there is no data to append new frames to. */
+	if (ring_buffer->current_fill_level == 0)
+	{
+		GST_DEBUG_OBJECT(
+			ring_buffer,
+			"prepending %" G_GSIZE_FORMAT " frame(s) requested, but ring buffer is empty -"
+			"no need to prepend silence; setting num_silence_frames_to_prepend to 0",
+			num_silence_frames_to_prepend
+		);
+		num_silence_frames_to_prepend = 0;
+	}
+
 	if (G_UNLIKELY(num_silence_frames_to_prepend > 0))
 	{
 		num_frames_to_write = ringbuffer_metrics_write(&(ring_buffer->metrics), num_silence_frames_to_prepend, &write_offset, write_lengths);
