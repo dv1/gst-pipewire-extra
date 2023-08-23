@@ -995,7 +995,7 @@ static gboolean gst_pw_audio_sink_query(GstElement *element, GstQuery *query)
 		{
 			gboolean sink_is_live, upstream_is_live;
 			GstClockTime min_latency, max_latency;
-			GstClockTime stream_delay_in_ns, ring_buffer_length_in_ns;
+			GstClockTime stream_delay_in_ns;
 
 			/* There is no special logic for latency calculations
 			 * when playing encoded audio, so just do the default
@@ -1034,23 +1034,12 @@ static gboolean gst_pw_audio_sink_query(GstElement *element, GstQuery *query)
 			 */
 			if (sink_is_live && upstream_is_live)
 			{
-				/* The extra latencies from this sink are the pw_stream delay
-				 * and the maximum amount of data. The pw_stream delay is
-				 * received in on_process_stream(), which will cause render()
+				/* The extra latency from this sink is the pw_stream delay. This
+				 * one is received in on_process_stream(), which will cause render()
 				 * to post a LATENCY message, and that will re-query all elements
-				 * (including this sink itself) for their current latency.
-				 * The ring_buffer_length defines how much time will pass
-				 * from the moment data enters a full ring buffer until it
-				 * exits said ring buffer. */
-
-				/* ring_buffer_length is set by a GObject property, which can
-				 * happen concurrently, so we need to synchronize access.
-				 * We do not rely on ring_buffer_length_snapshot here, since
-				 * that value is set in _start(), while this _query() vfunc
-				 * can actually be called _before_ _start() runs. */
-				GST_OBJECT_LOCK(self);
-				ring_buffer_length_in_ns = self->ring_buffer_length_in_ms * GST_MSECOND;
-				GST_OBJECT_UNLOCK(self);
+				 * (including this sink itself) for their current latency. That
+				 * way, the pw_stream delay will be correctly factored into the
+				 * sink's latency figures. */
 
 				/* Synchronize access since the stream delay is set by
 				 * the on_process_stream() function. */
@@ -1058,16 +1047,15 @@ static gboolean gst_pw_audio_sink_query(GstElement *element, GstQuery *query)
 				stream_delay_in_ns = self->stream_delay_in_ns;
 				UNLOCK_LATENCY_MUTEX(self);
 
-				min_latency += stream_delay_in_ns + ring_buffer_length_in_ns;
+				min_latency += stream_delay_in_ns;
 				if (GST_CLOCK_TIME_IS_VALID(max_latency))
-					max_latency += stream_delay_in_ns + ring_buffer_length_in_ns;
+					max_latency += stream_delay_in_ns;
 
 				GST_DEBUG_OBJECT(
 					element,
-					"PW stream delay: %" GST_TIME_FORMAT "  ring buffer length: %" GST_TIME_FORMAT
+					"PW stream delay: %" GST_TIME_FORMAT
 					"  => adjusted min/max latency: %" GST_TIME_FORMAT "/%" GST_TIME_FORMAT,
 					GST_TIME_ARGS(stream_delay_in_ns),
-					GST_TIME_ARGS(ring_buffer_length_in_ns),
 					GST_TIME_ARGS(min_latency), GST_TIME_ARGS(max_latency)
 				);
 			}
