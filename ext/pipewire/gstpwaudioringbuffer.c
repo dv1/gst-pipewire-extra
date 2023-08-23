@@ -242,13 +242,12 @@ gsize gst_pw_audio_ring_buffer_push_frames(
 	 * that was just supplied - and subtract the current fill level from it.
 	 * Since the buffered data is made of a sequence of raw frames (there are
 	 * no "holes" in the ring buffer), (newest_pts - current_fill_level) must
-	 * equal the oldest frame PTS. */
-	// TODO: This should only be necessary when oldest_frame_pts is not
-	// initialized, and in fact could interfere with the behavior of
-	// gst_pw_audio_ring_buffer_retrieve_buffer. But in practice, if
-	// these updates are not constantly done, playback is not properly
-	// in sync. Find out why.
-	if (GST_CLOCK_TIME_IS_VALID(pts))
+	 * equal the oldest frame PTS.
+	 * Only do this if no oldest_frame_pts is set yet. This happens at the
+	 * beginning, before the pw dataloop actually started. Once it is going,
+	 * the code in gst_pw_audio_ring_buffer_retrieve_frames() will take care
+	 * of keeping the oldest_frame_pts up to date. */
+	if (GST_CLOCK_TIME_IS_VALID(pts) && !GST_CLOCK_TIME_IS_VALID(ring_buffer->oldest_frame_pts))
 	{
 		GstClockTime newest_pts;
 		GstClockTime oldest_frame_pts;
@@ -276,10 +275,10 @@ gsize gst_pw_audio_ring_buffer_push_frames(
 			{
 				GST_INFO_OBJECT(
 					ring_buffer,
-					"updating oldest frame PTS from: %" GST_TIME_FORMAT " to: %" GST_TIME_FORMAT " (delta: %" G_GINT64_FORMAT ")",
+					"updating oldest frame PTS from: %" GST_TIME_FORMAT " to: %" GST_TIME_FORMAT " (delta: %" GST_STIME_FORMAT ")",
 					GST_TIME_ARGS(ring_buffer->oldest_frame_pts),
 					GST_TIME_ARGS(oldest_frame_pts),
-					update_delta
+					GST_STIME_ARGS(update_delta)
 				);
 			}
 		}
@@ -589,13 +588,21 @@ GstPwAudioRingBufferRetrievalResult gst_pw_audio_ring_buffer_retrieve_frames(
 
 				if (GST_CLOCK_TIME_IS_VALID(ring_buffer->oldest_frame_pts))
 				{
-					GstClockTime updated_pts = ring_buffer->oldest_frame_pts + duration_of_expired_buffered_frames;
+					/* The oldest_frame_pts must be updated by the duration that is _actually_
+					 * flushed. This can be less than the originally requested duration, which
+					 * is duration_of_expired_buffered_frames. see the MIN() macro call above.
+					 * In cases where silence was prepended, this can happen. If we do not
+					 * take this into account, oldest_frame_pts is advanced by a too high
+					 * duration, and thus causes a significant sudden drift. */
+					GstClockTime flushed_duration = gst_pw_audio_format_calculate_duration_from_num_frames(&(ring_buffer->format), num_frames_to_flush);
+					GstClockTime updated_pts = ring_buffer->oldest_frame_pts + flushed_duration;
 
 					GST_DEBUG_OBJECT(
 						ring_buffer,
-						"updating oldest queued data PTS: %" GST_TIME_FORMAT " -> %" GST_TIME_FORMAT,
+						"updating oldest queued data PTS: %" GST_TIME_FORMAT " -> %" GST_TIME_FORMAT " (flushed duration: %" GST_TIME_FORMAT ")",
 						GST_TIME_ARGS(ring_buffer->oldest_frame_pts),
-						GST_TIME_ARGS(updated_pts)
+						GST_TIME_ARGS(updated_pts),
+						GST_TIME_ARGS(flushed_duration)
 					);
 
 					ring_buffer->oldest_frame_pts = updated_pts;
