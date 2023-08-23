@@ -353,7 +353,7 @@ GstPwAudioRingBufferRetrievalResult gst_pw_audio_ring_buffer_retrieve_frames(
 		GstClockTime buffered_frames_start_pts = ring_buffer->oldest_frame_pts + ring_buffer_data_pts_shift;
 		GstClockTime buffered_frames_end_pts = buffered_frames_start_pts + ring_buffer->current_fill_level;
 
-		GST_DEBUG_OBJECT(
+		GST_LOG_OBJECT(
 			ring_buffer,
 			"retrieval window: %" GST_TIME_FORMAT " - %" GST_TIME_FORMAT "  "
 			"buffered frames window: %" GST_TIME_FORMAT " - %" GST_TIME_FORMAT "  "
@@ -640,7 +640,7 @@ GstPwAudioRingBufferRetrievalResult gst_pw_audio_ring_buffer_retrieve_frames(
 			num_frames_with_extra_padding = num_silence_frames_to_prepend + actual_num_frames_to_retrieve;
 			num_silence_frames_to_append = (num_frames_to_retrieve > num_frames_with_extra_padding) ? (num_frames_to_retrieve - num_frames_with_extra_padding) : 0;
 
-			GST_DEBUG_OBJECT(
+			GST_LOG_OBJECT(
 				ring_buffer,
 				"buffered frames window is (partially) in the present; buffered frames to retrieval PTS delta: %" G_GINT64_FORMAT,
 				*buffered_frames_to_retrieval_pts_delta
