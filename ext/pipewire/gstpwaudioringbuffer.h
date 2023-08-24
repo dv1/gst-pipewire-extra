@@ -157,11 +157,20 @@ GstPwAudioRingBuffer* gst_pw_audio_ring_buffer_new(GstPwAudioFormat *format, Gst
 
 void gst_pw_audio_ring_buffer_flush(GstPwAudioRingBuffer *ring_buffer);
 
+/* Note that num_silence_frames_to_prepend must always be a valid pointer.
+ * If no silence frames are to be prepended, just pass a pointer to a gsize
+ * variable with the value 0. This function will update the contents of
+ * *num_silence_frames_to_prepend to how many silence frames were _not_
+ * written (because the ring buffer had no capacity for all of them).
+ * Note that if *num_silence_frames_to_prepend is set to a nonzero value,
+ * it can be assumed that the return value of this function will be zero,
+ * because then it means that the ring buffer was filled with silence
+ * frames and thus there was no room left for actual frames. */
 gsize gst_pw_audio_ring_buffer_push_frames(
 	GstPwAudioRingBuffer *ring_buffer,
 	gpointer frames,
 	gsize num_frames,
-	gsize num_silence_frames_to_prepend,
+	gsize *num_silence_frames_to_prepend,
 	GstClockTime pts
 );
 

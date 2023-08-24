@@ -72,6 +72,7 @@ GST_START_TEST(basic_io)
 	};
 	GstPwAudioRingBuffer *ring_buffer;
 	gsize push_result;
+	gsize num_silence_frames_to_prepend;
 	GstClockTimeDiff buffered_frames_to_retrieval_pts_delta;
 	GstPwAudioRingBufferRetrievalResult retrieval_result;
 	enum { num_frames = CALC_NUM_FRAMES_FOR_MSECS(10) };
@@ -105,11 +106,12 @@ GST_START_TEST(basic_io)
 		frames[i] = i + 10;
 
 	/* Perform the actual push. */
+	num_silence_frames_to_prepend = 0;
 	push_result = gst_pw_audio_ring_buffer_push_frames(
 		ring_buffer,
 		frames,
 		num_frames,
-		0,
+		&num_silence_frames_to_prepend,
 		GST_CLOCK_TIME_NONE
 	);
 	/* We expect all test frames to be pushed since there's enough room in the ring buffer. */
@@ -125,11 +127,12 @@ GST_START_TEST(basic_io)
 	 * pushed frames and the new ones to test this silence frame insertion feature. */
 	for (i = 0; i < 20; ++i)
 		frames[i] = 5;
+	num_silence_frames_to_prepend = 10;
 	push_result = gst_pw_audio_ring_buffer_push_frames(
 		ring_buffer,
 		frames,
 		20,
-		10,
+		&num_silence_frames_to_prepend,
 		GST_CLOCK_TIME_NONE
 	);
 	assert_equals_uint64(push_result, 20);
@@ -209,6 +212,7 @@ GST_START_TEST(attempt_to_retrieve_more_frames_than_available)
 	gsize push_result;
 	GstClockTimeDiff buffered_frames_to_retrieval_pts_delta;
 	GstPwAudioRingBufferRetrievalResult retrieval_result;
+	gsize num_silence_frames_to_prepend;
 	enum { num_frames = CALC_NUM_FRAMES_FOR_MSECS(10) };
 	gint16 frames[num_frames * NUM_CHANNELS];
 	guint i;
@@ -232,11 +236,12 @@ GST_START_TEST(attempt_to_retrieve_more_frames_than_available)
 	for (i = 0; i < 10; ++i)
 		frames[i] = i + 10;
 
+	num_silence_frames_to_prepend = 0;
 	push_result = gst_pw_audio_ring_buffer_push_frames(
 		ring_buffer,
 		frames,
 		10,
-		0,
+		&num_silence_frames_to_prepend,
 		GST_CLOCK_TIME_NONE
 	);
 
@@ -284,6 +289,7 @@ GST_START_TEST(attempt_to_push_frames_when_full)
 	};
 	GstPwAudioRingBuffer *ring_buffer;
 	gsize push_result;
+	gsize num_silence_frames_to_prepend;
 	enum { num_frames = CALC_NUM_FRAMES_FOR_MSECS(100) };
 	gint16 frames[num_frames * NUM_CHANNELS];
 	guint i;
@@ -306,11 +312,12 @@ GST_START_TEST(attempt_to_push_frames_when_full)
 	memset(ring_buffer->buffered_frames, 0, ring_buffer->stride * ring_buffer->metrics.capacity);
 	for (i = 0; i < num_frames; ++i)
 		frames[i] = i + 10;
+	num_silence_frames_to_prepend = 0;
 	push_result = gst_pw_audio_ring_buffer_push_frames(
 		ring_buffer,
 		frames,
 		num_frames,
-		0,
+		&num_silence_frames_to_prepend,
 		GST_CLOCK_TIME_NONE
 	);
 	assert_equals_uint64(push_result, num_frames);
@@ -319,11 +326,12 @@ GST_START_TEST(attempt_to_push_frames_when_full)
 	/* Now try to push 10 frames into the ring buffer. We expect this to return 0,
 	 * indicating that 0 frames were pushed (because the ring buffer is already full). */
 	memset(frames, 0, sizeof(frames));
+	num_silence_frames_to_prepend = 0;
 	push_result = gst_pw_audio_ring_buffer_push_frames(
 		ring_buffer,
 		frames,
 		10,
-		0,
+		&num_silence_frames_to_prepend,
 		GST_CLOCK_TIME_NONE
 	);
 	assert_equals_uint64(push_result, 0);
@@ -345,6 +353,7 @@ GST_START_TEST(attempt_to_push_frames_when_almost_full)
 	};
 	GstPwAudioRingBuffer *ring_buffer;
 	gsize push_result;
+	gsize num_silence_frames_to_prepend;
 	enum { num_frames = CALC_NUM_FRAMES_FOR_MSECS(100) - 4 };
 	gint16 frames[num_frames * NUM_CHANNELS];
 	guint i;
@@ -367,11 +376,12 @@ GST_START_TEST(attempt_to_push_frames_when_almost_full)
 	memset(ring_buffer->buffered_frames, 0, ring_buffer->stride * ring_buffer->metrics.capacity);
 	for (i = 0; i < num_frames; ++i)
 		frames[i] = i + 10;
+	num_silence_frames_to_prepend = 0;
 	push_result = gst_pw_audio_ring_buffer_push_frames(
 		ring_buffer,
 		frames,
 		num_frames,
-		0,
+		&num_silence_frames_to_prepend,
 		GST_CLOCK_TIME_NONE
 	);
 	assert_equals_uint64(push_result, num_frames);
@@ -380,11 +390,12 @@ GST_START_TEST(attempt_to_push_frames_when_almost_full)
 	/* Now try to push 10 frames into the ring buffer. We expect this to return 4,
 	 * indicating that 4 frames were pushed (because the ring buffer is almost full). */
 	memset(frames, 0, sizeof(frames));
+	num_silence_frames_to_prepend = 0;
 	push_result = gst_pw_audio_ring_buffer_push_frames(
 		ring_buffer,
 		frames,
 		10,
-		0,
+		&num_silence_frames_to_prepend,
 		GST_CLOCK_TIME_NONE
 	);
 	assert_equals_uint64(push_result, 4);
@@ -408,6 +419,7 @@ GST_START_TEST(basic_timestamped_io)
 	enum { num_frames = CALC_NUM_FRAMES_FOR_MSECS(20) };
 	enum { num_frames_for_1ms = CALC_NUM_FRAMES_FOR_MSECS(1) };
 	gint16 frames[num_frames * NUM_CHANNELS];
+	gsize num_silence_frames_to_prepend;
 	GstClockTimeDiff buffered_frames_to_retrieval_pts_delta;
 	GstPwAudioRingBufferRetrievalResult retrieval_result;
 	guint i;
@@ -433,11 +445,12 @@ GST_START_TEST(basic_timestamped_io)
 	 * This timestamp is also expected to be set as oldest_frame_pts. */
 	for (i = 0; i < num_frames_for_1ms; ++i)
 		frames[i] = i + 10;
+	num_silence_frames_to_prepend = 0;
 	push_result = gst_pw_audio_ring_buffer_push_frames(
 		ring_buffer,
 		frames,
 		num_frames_for_1ms,
-		0,
+		&num_silence_frames_to_prepend,
 		GST_MSECOND * 10
 	);
 	assert_equals_uint64(push_result, num_frames_for_1ms);
@@ -453,11 +466,12 @@ GST_START_TEST(basic_timestamped_io)
 	 * the "oldest" one in the buffer. */
 	for (i = 0; i < num_frames_for_1ms; ++i)
 		frames[i] = i + 100;
+	num_silence_frames_to_prepend = 0;
 	push_result = gst_pw_audio_ring_buffer_push_frames(
 		ring_buffer,
 		frames,
 		num_frames_for_1ms,
-		0,
+		&num_silence_frames_to_prepend,
 		GST_MSECOND * 11
 	);
 	assert_equals_uint64(push_result, num_frames_for_1ms);
@@ -479,11 +493,12 @@ GST_START_TEST(basic_timestamped_io)
 	 * silence frames). */
 	for (i = 0; i < num_frames_for_1ms; ++i)
 		frames[i] = i + 200;
+	num_silence_frames_to_prepend = 0;
 	push_result = gst_pw_audio_ring_buffer_push_frames(
 		ring_buffer,
 		frames,
 		num_frames_for_1ms,
-		0,
+		&num_silence_frames_to_prepend,
 		GST_MSECOND * 15
 	);
 	assert_equals_uint64(push_result, num_frames_for_1ms);
@@ -529,6 +544,7 @@ GST_START_TEST(buffered_frames_fully_in_the_future)
 	};
 	GstPwAudioRingBuffer *ring_buffer;
 	gsize push_result;
+	gsize num_silence_frames_to_prepend;
 	enum { num_frames = CALC_NUM_FRAMES_FOR_MSECS(20) };
 	enum { num_frames_for_1ms = CALC_NUM_FRAMES_FOR_MSECS(1) };
 	gint16 frames[num_frames * NUM_CHANNELS];
@@ -557,11 +573,12 @@ GST_START_TEST(buffered_frames_fully_in_the_future)
 	 * This timestamp is also expected to be set as oldest_frame_pts. */
 	for (i = 0; i < num_frames_for_1ms; ++i)
 		frames[i] = i + 10;
+	num_silence_frames_to_prepend = 0;
 	push_result = gst_pw_audio_ring_buffer_push_frames(
 		ring_buffer,
 		frames,
 		num_frames_for_1ms,
-		0,
+		&num_silence_frames_to_prepend,
 		GST_MSECOND * 10
 	);
 	assert_equals_uint64(push_result, num_frames_for_1ms);
@@ -601,6 +618,7 @@ GST_START_TEST(buffered_frames_fully_in_the_past)
 	};
 	GstPwAudioRingBuffer *ring_buffer;
 	gsize push_result;
+	gsize num_silence_frames_to_prepend;
 	enum { num_frames = CALC_NUM_FRAMES_FOR_MSECS(20) };
 	enum { num_frames_for_1ms = CALC_NUM_FRAMES_FOR_MSECS(1) };
 	gint16 frames[num_frames * NUM_CHANNELS];
@@ -629,11 +647,12 @@ GST_START_TEST(buffered_frames_fully_in_the_past)
 	 * This timestamp is also expected to be set as oldest_frame_pts. */
 	for (i = 0; i < num_frames_for_1ms; ++i)
 		frames[i] = i + 10;
+	num_silence_frames_to_prepend = 0;
 	push_result = gst_pw_audio_ring_buffer_push_frames(
 		ring_buffer,
 		frames,
 		num_frames_for_1ms,
-		0,
+		&num_silence_frames_to_prepend,
 		GST_MSECOND * 10
 	);
 	assert_equals_uint64(push_result, num_frames_for_1ms);
@@ -675,6 +694,7 @@ GST_START_TEST(buffered_frames_partially_in_the_future)
 	};
 	GstPwAudioRingBuffer *ring_buffer;
 	gsize push_result;
+	gsize num_silence_frames_to_prepend;
 	enum { num_frames = CALC_NUM_FRAMES_FOR_MSECS(20) };
 	enum { num_frames_for_1ms = CALC_NUM_FRAMES_FOR_MSECS(1) };
 	enum { num_frames_for_10ms = num_frames_for_1ms * 10 };
@@ -704,11 +724,12 @@ GST_START_TEST(buffered_frames_partially_in_the_future)
 	 * This timestamp is also expected to be set as oldest_frame_pts. */
 	for (i = 0; i < num_frames_for_10ms; ++i)
 		frames[i] = i + 10;
+	num_silence_frames_to_prepend = 0;
 	push_result = gst_pw_audio_ring_buffer_push_frames(
 		ring_buffer,
 		frames,
 		num_frames_for_10ms,
-		0,
+		&num_silence_frames_to_prepend,
 		GST_MSECOND * 10
 	);
 	assert_equals_uint64(push_result, num_frames_for_10ms);
@@ -754,6 +775,7 @@ GST_START_TEST(buffered_frames_partially_in_the_past)
 	};
 	GstPwAudioRingBuffer *ring_buffer;
 	gsize push_result;
+	gsize num_silence_frames_to_prepend;
 	enum { num_frames = CALC_NUM_FRAMES_FOR_MSECS(20) };
 	enum { num_frames_for_1ms = CALC_NUM_FRAMES_FOR_MSECS(1) };
 	enum { num_frames_for_10ms = num_frames_for_1ms * 10 };
@@ -783,11 +805,12 @@ GST_START_TEST(buffered_frames_partially_in_the_past)
 	 * This timestamp is also expected to be set as oldest_frame_pts. */
 	for (i = 0; i < num_frames_for_10ms; ++i)
 		frames[i] = i + 10;
+	num_silence_frames_to_prepend = 0;
 	push_result = gst_pw_audio_ring_buffer_push_frames(
 		ring_buffer,
 		frames,
 		num_frames_for_10ms,
-		0,
+		&num_silence_frames_to_prepend,
 		GST_MSECOND * 10
 	);
 	assert_equals_uint64(push_result, num_frames_for_10ms);
@@ -832,6 +855,7 @@ GST_START_TEST(buffered_frames_partially_in_the_future_within_skew_threshold)
 	};
 	GstPwAudioRingBuffer *ring_buffer;
 	gsize push_result;
+	gsize num_silence_frames_to_prepend;
 	enum { num_frames = CALC_NUM_FRAMES_FOR_MSECS(20) };
 	enum { num_frames_for_1ms = CALC_NUM_FRAMES_FOR_MSECS(1) };
 	enum { num_frames_for_10ms = num_frames_for_1ms * 10 };
@@ -861,11 +885,12 @@ GST_START_TEST(buffered_frames_partially_in_the_future_within_skew_threshold)
 	 * This timestamp is also expected to be set as oldest_frame_pts. */
 	for (i = 0; i < num_frames_for_10ms; ++i)
 		frames[i] = i + 10;
+	num_silence_frames_to_prepend = 0;
 	push_result = gst_pw_audio_ring_buffer_push_frames(
 		ring_buffer,
 		frames,
 		num_frames_for_10ms,
-		0,
+		&num_silence_frames_to_prepend,
 		GST_MSECOND * 10
 	);
 	assert_equals_uint64(push_result, num_frames_for_10ms);

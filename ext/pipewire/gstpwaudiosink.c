@@ -2167,7 +2167,7 @@ static GstFlowReturn gst_pw_audio_sink_render_raw(GstPwAudioSink *self, GstBuffe
 			self->ring_buffer,
 			map_info.data + incoming_buffer_frame_offset * self->stride,
 			num_remaining_frames_to_push,
-			num_silence_frames_to_insert,
+			&num_silence_frames_to_insert,
 			push_pts
 		);
 

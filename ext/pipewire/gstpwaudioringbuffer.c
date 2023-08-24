@@ -138,13 +138,14 @@ gsize gst_pw_audio_ring_buffer_push_frames(
 	GstPwAudioRingBuffer *ring_buffer,
 	gpointer frames,
 	gsize num_frames,
-	gsize num_silence_frames_to_prepend,
+	gsize *num_silence_frames_to_prepend,
 	GstClockTime pts
 )
 {
 	guint64 write_lengths[2];
 	guint64 write_offset;
 	guint64 num_frames_to_write;
+	guint64 num_silence_frames_to_write = 0;
 
 	g_assert(ring_buffer != NULL);
 	g_assert(frames != NULL);
@@ -165,15 +166,15 @@ gsize gst_pw_audio_ring_buffer_push_frames(
 			ring_buffer,
 			"prepending %" G_GSIZE_FORMAT " frame(s) requested, but ring buffer is empty -"
 			"no need to prepend silence; setting num_silence_frames_to_prepend to 0",
-			num_silence_frames_to_prepend
+			*num_silence_frames_to_prepend
 		);
-		num_silence_frames_to_prepend = 0;
+		*num_silence_frames_to_prepend = 0;
 	}
 
-	if (G_UNLIKELY(num_silence_frames_to_prepend > 0))
+	if (G_UNLIKELY(*num_silence_frames_to_prepend > 0))
 	{
-		num_frames_to_write = ringbuffer_metrics_write(&(ring_buffer->metrics), num_silence_frames_to_prepend, &write_offset, write_lengths);
-		g_assert(num_frames_to_write <= num_silence_frames_to_prepend);
+		num_silence_frames_to_write = ringbuffer_metrics_write(&(ring_buffer->metrics), *num_silence_frames_to_prepend, &write_offset, write_lengths);
+		g_assert(num_silence_frames_to_write <= *num_silence_frames_to_prepend);
 
 		if (write_lengths[0] > 0)
 		{
@@ -192,9 +193,18 @@ gsize gst_pw_audio_ring_buffer_push_frames(
 			);
 		}
 
+		*num_silence_frames_to_prepend -= num_silence_frames_to_write;
+
 		ring_buffer->current_fill_level = gst_pw_audio_format_calculate_duration_from_num_frames(
 			&(ring_buffer->format),
 			ring_buffer->metrics.current_num_buffered_frames
+		);
+
+		GST_DEBUG_OBJECT(
+			ring_buffer,
+			"silence write lengths: %" G_GUINT64_FORMAT " / %" G_GUINT64_FORMAT "; fill level after prepending: %" GST_TIME_FORMAT,
+			write_lengths[0], write_lengths[1],
+			GST_TIME_ARGS(ring_buffer->current_fill_level)
 		);
 	}
 
@@ -203,13 +213,15 @@ gsize gst_pw_audio_ring_buffer_push_frames(
 
 	GST_LOG_OBJECT(
 		ring_buffer,
-		"pushed %" G_GSIZE_FORMAT " out of %" G_GUINT64_FORMAT " frame(s); "
-		"prepended %" G_GSIZE_FORMAT " silence frame(s); "
+		"pushed %" G_GSIZE_FORMAT " out of %" G_GUINT64_FORMAT " frame(s) "
+		"(write lengths %" G_GUINT64_FORMAT " / %" G_GUINT64_FORMAT "); "
+		"prepended %" G_GUINT64_FORMAT " silence frame(s), with %" G_GSIZE_FORMAT " remaining silence frame(s) to prepend; "
 		"read / write positions: %" G_GUINT64_FORMAT " / %" G_GUINT64_FORMAT "; "
 		"num buffered frames: %" G_GUINT64_FORMAT "; "
 		"capacity: %" G_GUINT64_FORMAT,
 		num_frames_to_write, num_frames,
-		num_silence_frames_to_prepend,
+		write_lengths[0], write_lengths[1],
+		num_silence_frames_to_write, *num_silence_frames_to_prepend,
 		ring_buffer->metrics.read_position, ring_buffer->metrics.write_position,
 		ring_buffer->metrics.current_num_buffered_frames,
 		ring_buffer->metrics.capacity
