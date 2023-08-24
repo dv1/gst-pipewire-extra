@@ -568,7 +568,30 @@ GstPwAudioRingBufferRetrievalResult gst_pw_audio_ring_buffer_retrieve_frames(
 				if (num_frames_with_silence_prepended > num_frames_to_retrieve)
 				{
 					guint64 num_excess_frames = num_frames_with_silence_prepended - num_frames_to_retrieve;
-					g_assert(num_excess_frames <= actual_num_frames_to_retrieve);
+
+					/* This happens when the silence length is long enough (due to skewing)
+					 * that the silence frames fully fill the available ringbuffer capacity.
+					 * In that case, the excess number of frames is higher than the
+					 * actual_num_frames_to_retrieve. Since we can't use a negative amount
+					 * of frames, instead, we just fill the ring buffer with silence
+					 * frames and then exit. */
+					if (G_UNLIKELY(num_excess_frames > actual_num_frames_to_retrieve))
+					{
+						GST_DEBUG_OBJECT(
+							ring_buffer,
+							"after skewing, enough silence frames need to be inserted that all actual frames now lie in the future"
+						);
+
+						gst_pw_audio_format_write_silence_frames(
+							&(ring_buffer->format),
+							((guint8 *)destination),
+							num_frames_to_retrieve
+						);
+
+						retval = GST_PW_AUDIO_RING_BUFFER_RETRIEVAL_RESULT_DATA_FULLY_IN_THE_FUTURE;
+						goto finish;
+					}
+
 					actual_num_frames_to_retrieve -= num_excess_frames;
 					actual_retrieval_duration -= silence_length;
 				}
