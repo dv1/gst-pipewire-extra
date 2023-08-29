@@ -1183,6 +1183,51 @@ static gboolean gst_pw_audio_sink_set_caps(GstBaseSink *basesink, GstCaps *caps)
 	);
 	self->stream_listener_added = TRUE;
 
+	/* Announce the audio rate to the graph. This can help with tuning the
+	 * quantum to better fit encoded frame lengths, and is necessary for
+	 * configuring the graph with a clock rate that most closely matches
+	 * the audio signal's sample rate.
+	 * Also, remove the latency property in case there's one left over from
+	 * a previous stream.
+	 * Do this before connecing to not cause unnecessary reconfigurations. */
+	{
+		gchar *rate_str = NULL;
+		struct spa_dict_item items[2];
+
+		items[0] = SPA_DICT_ITEM_INIT(PW_KEY_NODE_LATENCY, NULL);
+
+		gint rate = -1;
+
+		if (gst_pw_audio_format_data_is_raw(self->pw_audio_format.audio_type))
+		{
+			switch (self->pw_audio_format.audio_type)
+			{
+				case GST_PIPEWIRE_AUDIO_TYPE_PCM:
+					rate = GST_AUDIO_INFO_RATE(&(self->pw_audio_format.info.pcm_audio_info));
+					break;
+				case GST_PIPEWIRE_AUDIO_TYPE_DSD:
+					rate = self->pw_audio_format.info.dsd_audio_info.rate;
+					break;
+				default:
+					break;
+			}
+		}
+		else
+		{
+			rate = self->pw_audio_format.info.encoded_audio_info.rate;
+		}
+
+		if (rate > 0)
+		{
+			rate_str = g_strdup_printf("1/%d", rate);
+			GST_DEBUG_OBJECT(self, "setting the node.rate property to \"%s\"", rate_str);
+			items[1] = SPA_DICT_ITEM_INIT(PW_KEY_NODE_RATE, rate_str);
+		}
+
+		pw_stream_update_properties(self->stream, &SPA_DICT_INIT(items, 2));
+		g_free(rate_str);
+	}
+
 	pw_stream_connect(
 		self->stream,
 		PW_DIRECTION_OUTPUT,
@@ -1202,33 +1247,6 @@ static gboolean gst_pw_audio_sink_set_caps(GstBaseSink *basesink, GstCaps *caps)
 	self->sink_caps = gst_caps_ref(caps);
 
 	self->last_encoded_frame_length = 0;
-
-	/* Set the audio's rate as the pw rate property if this is an encoded stream.
-	 * This can help with tuning the quantum to better fit encoded frame lengths.
-	 * (Raw audio can be subdivided freely to perfectly fit any quantum length,
-	 * so this logic isn't really necessary for those audio types.)
-	 * Also, remove the latency property in case there's one left over from
-	 * a previous stream. */
-	{
-		gchar *rate_str = NULL;
-		struct spa_dict_item items[2];
-
-		items[0] = SPA_DICT_ITEM_INIT(PW_KEY_NODE_LATENCY, NULL);
-
-		if (gst_pw_audio_format_data_is_raw(self->pw_audio_format.audio_type))
-		{
-			items[1] = SPA_DICT_ITEM_INIT(PW_KEY_NODE_RATE, NULL);
-		}
-		else
-		{
-			guint rate = self->pw_audio_format.info.encoded_audio_info.rate;
-			rate_str = g_strdup_printf("1/%u", rate);
-			items[1] = SPA_DICT_ITEM_INIT(PW_KEY_NODE_RATE, rate_str);
-		}
-
-		pw_stream_update_properties(self->stream, &SPA_DICT_INIT(items, 2));
-		g_free(rate_str);
-	}
 
 	gst_pw_audio_sink_setup_audio_data_buffer(self);
 
