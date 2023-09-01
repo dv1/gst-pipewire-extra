@@ -80,7 +80,9 @@ enum
 	PROP_APP_NAME,
 	PROP_NODE_NAME,
 	PROP_NODE_DESCRIPTION,
+	PROP_PROBE_FOR_CAPS,
 	PROP_CACHE_PROBED_CAPS,
+	PROP_AUTOCONNECT,
 
 	PROP_LAST
 };
@@ -96,7 +98,9 @@ enum
 #define DEFAULT_APP_NAME NULL
 #define DEFAULT_NODE_NAME NULL
 #define DEFAULT_NODE_DESCRIPTION NULL
+#define DEFAULT_PROBE_FOR_CAPS TRUE
 #define DEFAULT_CACHE_PROBED_CAPS TRUE
+#define DEFAULT_AUTOCONNECT TRUE
 
 #define LOCK_AUDIO_DATA_BUFFER_MUTEX(pw_audio_sink) g_mutex_lock(&((pw_audio_sink)->audio_data_buffer_mutex))
 #define UNLOCK_AUDIO_DATA_BUFFER_MUTEX(pw_audio_sink) g_mutex_unlock(&((pw_audio_sink)->audio_data_buffer_mutex))
@@ -130,7 +134,9 @@ struct _GstPwAudioSink
 	gchar *app_name;
 	gchar *node_name;
 	gchar *node_description;
+	gboolean probe_for_caps;
 	gboolean cache_probed_caps;
+	gboolean autoconnect;
 
 	/** Playback format **/
 
@@ -557,12 +563,38 @@ static void gst_pw_audio_sink_class_init(GstPwAudioSinkClass *klass)
 
 	g_object_class_install_property(
 		object_class,
+		PROP_PROBE_FOR_CAPS,
+		g_param_spec_boolean(
+			"probe-for-caps",
+			"Probe for caps",
+			"Create probing streams to figure out what caps the PipeWire graph can handle; "
+			"if set to false, no probing streams are created, and the template caps are used instead",
+			DEFAULT_PROBE_FOR_CAPS,
+			(GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)
+		)
+	);
+
+	g_object_class_install_property(
+		object_class,
 		PROP_CACHE_PROBED_CAPS,
 		g_param_spec_boolean(
 			"cache-probed-caps",
 			"Cache proped caps",
 			"Cache the caps that get probed during the first caps query after the element started",
 			DEFAULT_CACHE_PROBED_CAPS,
+			(GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)
+		)
+	);
+
+	g_object_class_install_property(
+		object_class,
+		PROP_AUTOCONNECT,
+		g_param_spec_boolean(
+			"autoconnect",
+			"Autoconnect",
+			"Let the session manager know that it needs to automatically connect this sink's SPA node "
+			"to other nodes in the graph",
+			DEFAULT_AUTOCONNECT,
 			(GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)
 		)
 	);
@@ -588,7 +620,9 @@ static void gst_pw_audio_sink_init(GstPwAudioSink *self)
 	self->app_name = g_strdup(DEFAULT_APP_NAME);
 	self->node_name = g_strdup(DEFAULT_NODE_NAME);
 	self->node_description = g_strdup(DEFAULT_NODE_DESCRIPTION);
+	self->probe_for_caps = DEFAULT_PROBE_FOR_CAPS;
 	self->cache_probed_caps = DEFAULT_CACHE_PROBED_CAPS;
+	self->autoconnect = DEFAULT_AUTOCONNECT;
 
 	self->sink_caps = NULL;
 	memset(&(self->pw_audio_format), 0, sizeof(self->pw_audio_format));
@@ -753,9 +787,21 @@ static void gst_pw_audio_sink_set_property(GObject *object, guint prop_id, GValu
 			GST_OBJECT_UNLOCK(self);
 			break;
 
+		case PROP_PROBE_FOR_CAPS:
+			GST_OBJECT_LOCK(self);
+			self->probe_for_caps = g_value_get_boolean(value);
+			GST_OBJECT_UNLOCK(self);
+			break;
+
 		case PROP_CACHE_PROBED_CAPS:
 			GST_OBJECT_LOCK(self);
 			self->cache_probed_caps = g_value_get_boolean(value);
+			GST_OBJECT_UNLOCK(self);
+			break;
+
+		case PROP_AUTOCONNECT:
+			GST_OBJECT_LOCK(self);
+			self->autoconnect = g_value_get_boolean(value);
 			GST_OBJECT_UNLOCK(self);
 			break;
 
@@ -830,9 +876,21 @@ static void gst_pw_audio_sink_get_property(GObject *object, guint prop_id, GValu
 			GST_OBJECT_UNLOCK(self);
 			break;
 
+		case PROP_PROBE_FOR_CAPS:
+			GST_OBJECT_LOCK(self);
+			g_value_set_boolean(value, self->probe_for_caps);
+			GST_OBJECT_UNLOCK(self);
+			break;
+
 		case PROP_CACHE_PROBED_CAPS:
 			GST_OBJECT_LOCK(self);
 			g_value_set_boolean(value, self->cache_probed_caps);
+			GST_OBJECT_UNLOCK(self);
+			break;
+
+		case PROP_AUTOCONNECT:
+			GST_OBJECT_LOCK(self);
+			g_value_set_boolean(value, self->autoconnect);
 			GST_OBJECT_UNLOCK(self);
 			break;
 
@@ -1100,6 +1158,7 @@ static gboolean gst_pw_audio_sink_set_caps(GstBaseSink *basesink, GstCaps *caps)
 	char const *error_str = NULL;
 	enum pw_stream_flags flags = 0;
 	uint32_t target_object_id;
+	gboolean autoconnect;
 	gboolean pw_thread_loop_locked = FALSE;
 	guint8 builder_buffer[1024];
 
@@ -1155,6 +1214,12 @@ static gboolean gst_pw_audio_sink_set_caps(GstBaseSink *basesink, GstCaps *caps)
 
 	self->stride = gst_pw_audio_format_get_stride(&(self->pw_audio_format));
 
+	/* Get GObject property values. */
+	GST_OBJECT_LOCK(self);
+	target_object_id = self->target_object_id;
+	autoconnect = self->autoconnect;
+	GST_OBJECT_UNLOCK(self);
+
 	/* Pick the stream connection flags.
 	 *
 	 * - PW_STREAM_FLAG_AUTOCONNECT to tell the session manager to link this client to a consumer.
@@ -1164,12 +1229,9 @@ static gboolean gst_pw_audio_sink_set_caps(GstBaseSink *basesink, GstCaps *caps)
 	 *   that does the processing in the PipeWire graph. Necessary to safely fetch the rate_diff value
 	 *   from the SPA IO position.
 	 */
-	flags = PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS | PW_STREAM_FLAG_INACTIVE | PW_STREAM_FLAG_RT_PROCESS;
-
-	/* Get GObject property values. */
-	GST_OBJECT_LOCK(self);
-	target_object_id = self->target_object_id;
-	GST_OBJECT_UNLOCK(self);
+	flags = PW_STREAM_FLAG_MAP_BUFFERS | PW_STREAM_FLAG_INACTIVE | PW_STREAM_FLAG_RT_PROCESS;
+	if (autoconnect)
+		flags |= PW_STREAM_FLAG_AUTOCONNECT;
 
 	/* Set up the new stream connection. We must do this with a locked
 	 * PW threaded loop to prevent race conditions from happening
@@ -1277,6 +1339,7 @@ static GstCaps* gst_pw_audio_sink_get_caps(GstBaseSink *basesink, GstCaps *filte
 {
 	GstPwAudioSink *self = GST_PW_AUDIO_SINK(basesink);
 	GstCaps *available_sinkcaps = NULL;
+	gboolean probe_for_caps;
 	gboolean cache_probed_caps;
 	uint32_t target_object_id;
 	gboolean cancelled = FALSE;
@@ -1284,6 +1347,7 @@ static GstCaps* gst_pw_audio_sink_get_caps(GstBaseSink *basesink, GstCaps *filte
 	GST_DEBUG_OBJECT(self, "new get-caps query");
 
 	GST_OBJECT_LOCK(self);
+	probe_for_caps = self->probe_for_caps;
 	cache_probed_caps = self->cache_probed_caps;
 	target_object_id = self->target_object_id;
 	GST_OBJECT_UNLOCK(self);
@@ -1294,6 +1358,13 @@ static GstCaps* gst_pw_audio_sink_get_caps(GstBaseSink *basesink, GstCaps *filte
 	 * same time. (The GstPwAudioFormatProbe's setup, teardown, and
 	 * probe calls themselves are MT safe, but this does not help here. */
 	g_mutex_lock(&(self->probe_process_mutex));
+
+	if (!probe_for_caps)
+	{
+		available_sinkcaps = gst_pw_audio_format_get_template_caps();
+		GST_DEBUG_OBJECT(self, "probe_for_caps is set to FALSE -> using template caps as available caps");
+		goto finish;
+	}
 
 	if (self->cached_probed_caps != NULL)
 	{
