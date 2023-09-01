@@ -209,6 +209,15 @@ struct _GstPwAudioSink
 	/* Set to true in the on_stream_drained() callback. Used for waiting until the
 	 * pw_stream itself is drained. */
 	gboolean stream_drained;
+	/* Set to true when the stream reaches the streaming state. Before that,
+	 * draining must not be attempted. Otherwise, because there's nothing to
+	 * drain, gst_pw_audio_sink_on_stream_drained() then never gets called, and
+	 * the pw_thread_loop_wait() call in gst_pw_audio_sink_drain_stream_unlocked()
+	 * which waits for the drain to finish will never stop waiting.
+	 * (Technically, one can queue buffers with pw_stream_queue_buffer() even
+	 * in the paused state, but this is not done in this sink - queuing is performed
+	 * in the process callback, which is only called in the streaming state.) */
+	gboolean can_drain;
 	/* Relevant for encoded audio. If the encoded audio frames are larger than the
 	 * requested audio length during a cycle, then this counter keeps track of the
 	 * excess playtime that is sent into the graph. It is not possible to subdivide
@@ -605,6 +614,7 @@ static void gst_pw_audio_sink_init(GstPwAudioSink *self)
 	self->latency = 0;
 	g_mutex_init(&(self->latency_mutex));
 	self->stream_drained = FALSE;
+	self->can_drain = FALSE;
 	self->accum_excess_encaudio_playtime = 0;
 
 	self->stream_clock = gst_pw_stream_clock_new(NULL);
@@ -1707,6 +1717,7 @@ static gboolean gst_pw_audio_sink_event(GstBaseSink *basesink, GstEvent *event)
 			/* Deactivate the stream since we won't be producing data during flush. */
 			pw_thread_loop_lock(self->pipewire_core->loop);
 			pw_stream_flush(self->stream, FALSE);
+			self->can_drain = FALSE;
 			gst_pw_audio_sink_activate_stream_unlocked(self, FALSE);
 			pw_thread_loop_unlock(self->pipewire_core->loop);
 
@@ -2560,7 +2571,7 @@ static void gst_pw_audio_sink_drain_stream_unlocked(GstPwAudioSink *self)
 	/* pw_stream_flush with drain = TRUE will block permanently if the
 	 * stream is not active, so the stream_is_active check is essential.
 	 * Also check stream_drained to avoid redundant calls. */
-	if (!self->stream_is_active || self->stream_drained)
+	if (!self->stream_is_active || self->stream_drained || !self->can_drain)
 		return;
 
 	GST_DEBUG_OBJECT(self, "pw stream drain initiated");
@@ -2688,6 +2699,9 @@ static void gst_pw_audio_sink_pw_state_changed(void *data, enum pw_stream_state 
 	);
 
 	switch (new_state) {
+		case PW_STREAM_STATE_STREAMING:
+			self->can_drain = TRUE;
+			break;
 		case PW_STREAM_STATE_ERROR:
 		case PW_STREAM_STATE_UNCONNECTED:
 			/* Make sure the stream is now considered drained. This is important if
@@ -2865,6 +2879,7 @@ static void gst_pw_audio_sink_on_stream_drained(void *data)
 	GstPwAudioSink *self = GST_PW_AUDIO_SINK_CAST(data);
 	GST_DEBUG_OBJECT(self, "pw stream fully drained");
 	self->stream_drained = TRUE;
+	self->can_drain = FALSE;
 	pw_thread_loop_signal(self->pipewire_core->loop, FALSE);
 }
 
