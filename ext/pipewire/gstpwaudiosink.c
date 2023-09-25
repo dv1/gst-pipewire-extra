@@ -83,6 +83,7 @@ enum
 	PROP_PROBE_FOR_CAPS,
 	PROP_CACHE_PROBED_CAPS,
 	PROP_AUTOCONNECT,
+	PROP_ANNOUNCE_PCM_RATE,
 
 	PROP_LAST
 };
@@ -101,6 +102,7 @@ enum
 #define DEFAULT_PROBE_FOR_CAPS TRUE
 #define DEFAULT_CACHE_PROBED_CAPS TRUE
 #define DEFAULT_AUTOCONNECT TRUE
+#define DEFAULT_ANNOUNCE_PCM_RATE TRUE
 
 #define LOCK_AUDIO_DATA_BUFFER_MUTEX(pw_audio_sink) g_mutex_lock(&((pw_audio_sink)->audio_data_buffer_mutex))
 #define UNLOCK_AUDIO_DATA_BUFFER_MUTEX(pw_audio_sink) g_mutex_unlock(&((pw_audio_sink)->audio_data_buffer_mutex))
@@ -137,6 +139,7 @@ struct _GstPwAudioSink
 	gboolean probe_for_caps;
 	gboolean cache_probed_caps;
 	gboolean autoconnect;
+	gboolean announce_pcm_rate;
 
 	/** Playback format **/
 
@@ -599,6 +602,19 @@ static void gst_pw_audio_sink_class_init(GstPwAudioSinkClass *klass)
 		)
 	);
 
+	g_object_class_install_property(
+		object_class,
+		PROP_ANNOUNCE_PCM_RATE,
+		g_param_spec_boolean(
+			"announce-pcm-rate",
+			"Announce PCM rate",
+			"If set to true, the rate will be announced when playing a PCM signal "
+			"(non-PCM signal rates are always announced regardless of this property's value)",
+			DEFAULT_ANNOUNCE_PCM_RATE,
+			(GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)
+		)
+	);
+
 	gst_element_class_set_static_metadata(
 		element_class,
 		"pwaudiosink",
@@ -623,6 +639,7 @@ static void gst_pw_audio_sink_init(GstPwAudioSink *self)
 	self->probe_for_caps = DEFAULT_PROBE_FOR_CAPS;
 	self->cache_probed_caps = DEFAULT_CACHE_PROBED_CAPS;
 	self->autoconnect = DEFAULT_AUTOCONNECT;
+	self->announce_pcm_rate = DEFAULT_ANNOUNCE_PCM_RATE;
 
 	self->sink_caps = NULL;
 	memset(&(self->pw_audio_format), 0, sizeof(self->pw_audio_format));
@@ -805,6 +822,12 @@ static void gst_pw_audio_sink_set_property(GObject *object, guint prop_id, GValu
 			GST_OBJECT_UNLOCK(self);
 			break;
 
+		case PROP_ANNOUNCE_PCM_RATE:
+			GST_OBJECT_LOCK(self);
+			self->announce_pcm_rate = g_value_get_boolean(value);
+			GST_OBJECT_UNLOCK(self);
+			break;
+
 		default:
 			G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
 			break;
@@ -891,6 +914,12 @@ static void gst_pw_audio_sink_get_property(GObject *object, guint prop_id, GValu
 		case PROP_AUTOCONNECT:
 			GST_OBJECT_LOCK(self);
 			g_value_set_boolean(value, self->autoconnect);
+			GST_OBJECT_UNLOCK(self);
+			break;
+
+		case PROP_ANNOUNCE_PCM_RATE:
+			GST_OBJECT_LOCK(self);
+			g_value_set_boolean(value, self->announce_pcm_rate);
 			GST_OBJECT_UNLOCK(self);
 			break;
 
@@ -1159,6 +1188,7 @@ static gboolean gst_pw_audio_sink_set_caps(GstBaseSink *basesink, GstCaps *caps)
 	enum pw_stream_flags flags = 0;
 	uint32_t target_object_id;
 	gboolean autoconnect;
+	gboolean announce_pcm_rate;
 	gboolean pw_thread_loop_locked = FALSE;
 	guint8 builder_buffer[1024];
 
@@ -1218,6 +1248,7 @@ static gboolean gst_pw_audio_sink_set_caps(GstBaseSink *basesink, GstCaps *caps)
 	GST_OBJECT_LOCK(self);
 	target_object_id = self->target_object_id;
 	autoconnect = self->autoconnect;
+	announce_pcm_rate = self->announce_pcm_rate;
 	GST_OBJECT_UNLOCK(self);
 
 	/* Pick the stream connection flags.
@@ -1265,8 +1296,9 @@ static gboolean gst_pw_audio_sink_set_caps(GstBaseSink *basesink, GstCaps *caps)
 	{
 		gchar *rate_str = NULL;
 		struct spa_dict_item items[2];
+		int num_populated_items = 0;
 
-		items[0] = SPA_DICT_ITEM_INIT(PW_KEY_NODE_LATENCY, NULL);
+		items[num_populated_items++] = SPA_DICT_ITEM_INIT(PW_KEY_NODE_LATENCY, NULL);
 
 		gint rate = -1;
 
@@ -1275,7 +1307,8 @@ static gboolean gst_pw_audio_sink_set_caps(GstBaseSink *basesink, GstCaps *caps)
 			switch (self->pw_audio_format.audio_type)
 			{
 				case GST_PIPEWIRE_AUDIO_TYPE_PCM:
-					rate = GST_AUDIO_INFO_RATE(&(self->pw_audio_format.info.pcm_audio_info));
+					if (announce_pcm_rate)
+						rate = GST_AUDIO_INFO_RATE(&(self->pw_audio_format.info.pcm_audio_info));
 					break;
 				case GST_PIPEWIRE_AUDIO_TYPE_DSD:
 					rate = self->pw_audio_format.info.dsd_audio_info.rate;
@@ -1293,10 +1326,10 @@ static gboolean gst_pw_audio_sink_set_caps(GstBaseSink *basesink, GstCaps *caps)
 		{
 			rate_str = g_strdup_printf("1/%d", rate);
 			GST_DEBUG_OBJECT(self, "setting the node.rate property to \"%s\"", rate_str);
-			items[1] = SPA_DICT_ITEM_INIT(PW_KEY_NODE_RATE, rate_str);
+			items[num_populated_items++] = SPA_DICT_ITEM_INIT(PW_KEY_NODE_RATE, rate_str);
 		}
 
-		pw_stream_update_properties(self->stream, &SPA_DICT_INIT(items, 2));
+		pw_stream_update_properties(self->stream, &SPA_DICT_INIT(items, num_populated_items));
 		g_free(rate_str);
 	}
 
