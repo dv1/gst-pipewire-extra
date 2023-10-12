@@ -1406,7 +1406,21 @@ static GstCaps* gst_pw_audio_sink_get_caps(GstBaseSink *basesink, GstCaps *filte
 		goto finish;
 	}
 
-	if (self->pipewire_core != NULL)
+	if (self->pipewire_core == NULL)
+	{
+		GST_DEBUG_OBJECT(self, "no PipeWire core present -> using template caps as available caps");
+		goto use_template_caps;
+	}
+
+	/* This handle the edge case where get_caps() gets called while the
+	 * pipeline is shutting down. This can happen when a pipeline was
+	 * started and then immediately stopped for example. */
+	if (self->format_probe == NULL)
+	{
+		GST_DEBUG_OBJECT(self, "no format probe present -> using template caps as available caps");
+		goto use_template_caps;
+	}
+
 	{
 		gint audio_type;
 
@@ -1510,12 +1524,14 @@ static GstCaps* gst_pw_audio_sink_get_caps(GstBaseSink *basesink, GstCaps *filte
 
 		if (cache_probed_caps)
 			gst_caps_replace(&(self->cached_probed_caps), available_sinkcaps);
+
+		goto finish;
 	}
-	else
-	{
-		available_sinkcaps = gst_pw_audio_format_get_template_caps();
-		GST_DEBUG_OBJECT(self, "using template caps as available caps");
-	}
+
+use_template_caps:
+	available_sinkcaps = gst_pw_audio_format_get_template_caps();
+	GST_DEBUG_OBJECT(self, "using template caps as available caps");
+	goto finish;
 
 finish:
 	g_mutex_unlock(&(self->probe_process_mutex));
