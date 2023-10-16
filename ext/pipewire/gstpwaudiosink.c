@@ -2706,6 +2706,35 @@ static void gst_pw_audio_sink_drain_stream_and_audio_data_buffer(GstPwAudioSink 
 	if (self->ring_buffer == NULL)
 		return;
 
+	/* Handle corner cases where the sink was already drained.
+	 * gst_pw_audio_sink_drain_stream_unlocked() already handles this,
+	 * but that function deals with draining the pw_stream itself.
+	 * The code block prior to that call deals with draining the
+	 * audio data buffer, and it too needs to be able to handle
+	 * the possibility that it was already drained before.
+	 * Do this by checking the same flags that are looked at by
+	 * gst_pw_audio_sink_drain_stream_unlocked(). */
+	{
+		gboolean cannot_drain;
+
+		pw_thread_loop_lock(self->pipewire_core->loop);
+		cannot_drain = !self->stream_is_active || self->stream_drained || !self->can_drain;
+		pw_thread_loop_unlock(self->pipewire_core->loop);
+
+		if (cannot_drain)
+		{
+			GST_DEBUG_OBJECT(
+				self,
+				"aborting drain attempt since draining cannot currently be done; "
+				"stream_is_active = %d stream_drained = %d can_drain = %d",
+				self->stream_is_active,
+				self->stream_drained,
+				self->can_drain
+			);
+			return;
+		}
+	}
+
 	/* locking the audio data buffer mutex to wait until the process
 	 * callback signals that the fill level / queue length can be
 	 * (re-)checked. We do that until the fill level is zero
@@ -2834,6 +2863,7 @@ static void gst_pw_audio_sink_pw_state_changed(void *data, enum pw_stream_state 
 				pw_stream_state_as_string(new_state)
 			);
 			self->stream_drained = TRUE;
+			self->can_drain = FALSE;
 			pw_thread_loop_signal(self->pipewire_core->loop, FALSE);
 			break;
 		default:
