@@ -82,6 +82,7 @@ enum
 	PROP_NODE_DESCRIPTION,
 	PROP_PROBE_FOR_CAPS,
 	PROP_CACHE_PROBED_CAPS,
+	PROP_USE_GLOBAL_PROBED_CAPS_CACHE,
 	PROP_AUTOCONNECT,
 	PROP_ANNOUNCE_PCM_RATE,
 
@@ -101,6 +102,7 @@ enum
 #define DEFAULT_NODE_DESCRIPTION NULL
 #define DEFAULT_PROBE_FOR_CAPS TRUE
 #define DEFAULT_CACHE_PROBED_CAPS TRUE
+#define DEFAULT_USE_GLOBAL_PROBED_CAPS_CACHE FALSE
 #define DEFAULT_AUTOCONNECT TRUE
 #define DEFAULT_ANNOUNCE_PCM_RATE TRUE
 
@@ -138,6 +140,7 @@ struct _GstPwAudioSink
 	gchar *node_description;
 	gboolean probe_for_caps;
 	gboolean cache_probed_caps;
+	gboolean use_global_probed_caps_cache;
 	gboolean autoconnect;
 	gboolean announce_pcm_rate;
 
@@ -299,6 +302,10 @@ struct _GstPwAudioSinkClass
 {
 	GstBaseSinkClass parent_class;
 };
+
+
+GMutex global_cached_probed_caps_mutex;
+GstCaps *global_cached_probed_caps = NULL;
 
 
 G_DEFINE_TYPE(GstPwAudioSink, gst_pw_audio_sink, GST_TYPE_BASE_SINK)
@@ -591,6 +598,19 @@ static void gst_pw_audio_sink_class_init(GstPwAudioSinkClass *klass)
 
 	g_object_class_install_property(
 		object_class,
+		PROP_USE_GLOBAL_PROBED_CAPS_CACHE,
+		g_param_spec_boolean(
+			"use-global-probed-caps-cache",
+			"Use global probed caps cache",
+			"When caching caps, use one global cache across pwaudiosink instances; only effective if cache-probed-caps is TRUE; "
+			"not recommended to use if the PipeWire graph is subject to changes that could lead to changes in probing results",
+			DEFAULT_USE_GLOBAL_PROBED_CAPS_CACHE,
+			(GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)
+		)
+	);
+
+	g_object_class_install_property(
+		object_class,
 		PROP_AUTOCONNECT,
 		g_param_spec_boolean(
 			"autoconnect",
@@ -638,6 +658,7 @@ static void gst_pw_audio_sink_init(GstPwAudioSink *self)
 	self->node_description = g_strdup(DEFAULT_NODE_DESCRIPTION);
 	self->probe_for_caps = DEFAULT_PROBE_FOR_CAPS;
 	self->cache_probed_caps = DEFAULT_CACHE_PROBED_CAPS;
+	self->use_global_probed_caps_cache = DEFAULT_USE_GLOBAL_PROBED_CAPS_CACHE;
 	self->autoconnect = DEFAULT_AUTOCONNECT;
 	self->announce_pcm_rate = DEFAULT_ANNOUNCE_PCM_RATE;
 
@@ -816,6 +837,12 @@ static void gst_pw_audio_sink_set_property(GObject *object, guint prop_id, GValu
 			GST_OBJECT_UNLOCK(self);
 			break;
 
+		case PROP_USE_GLOBAL_PROBED_CAPS_CACHE:
+			GST_OBJECT_LOCK(self);
+			self->use_global_probed_caps_cache = g_value_get_boolean(value);
+			GST_OBJECT_UNLOCK(self);
+			break;
+
 		case PROP_AUTOCONNECT:
 			GST_OBJECT_LOCK(self);
 			self->autoconnect = g_value_get_boolean(value);
@@ -908,6 +935,12 @@ static void gst_pw_audio_sink_get_property(GObject *object, guint prop_id, GValu
 		case PROP_CACHE_PROBED_CAPS:
 			GST_OBJECT_LOCK(self);
 			g_value_set_boolean(value, self->cache_probed_caps);
+			GST_OBJECT_UNLOCK(self);
+			break;
+
+		case PROP_USE_GLOBAL_PROBED_CAPS_CACHE:
+			GST_OBJECT_LOCK(self);
+			g_value_set_boolean(value, self->use_global_probed_caps_cache);
 			GST_OBJECT_UNLOCK(self);
 			break;
 
@@ -1374,6 +1407,7 @@ static GstCaps* gst_pw_audio_sink_get_caps(GstBaseSink *basesink, GstCaps *filte
 	GstCaps *available_sinkcaps = NULL;
 	gboolean probe_for_caps;
 	gboolean cache_probed_caps;
+	gboolean use_global_probed_caps_cache;
 	uint32_t target_object_id;
 	gboolean cancelled = FALSE;
 
@@ -1382,6 +1416,7 @@ static GstCaps* gst_pw_audio_sink_get_caps(GstBaseSink *basesink, GstCaps *filte
 	GST_OBJECT_LOCK(self);
 	probe_for_caps = self->probe_for_caps;
 	cache_probed_caps = self->cache_probed_caps;
+	use_global_probed_caps_cache = self->use_global_probed_caps_cache;
 	target_object_id = self->target_object_id;
 	GST_OBJECT_UNLOCK(self);
 
@@ -1397,6 +1432,32 @@ static GstCaps* gst_pw_audio_sink_get_caps(GstBaseSink *basesink, GstCaps *filte
 		available_sinkcaps = gst_pw_audio_format_get_template_caps();
 		GST_DEBUG_OBJECT(self, "probe_for_caps is set to FALSE -> using template caps as available caps");
 		goto finish;
+	}
+
+	if (use_global_probed_caps_cache)
+	{
+		if (cache_probed_caps)
+		{
+			g_mutex_lock(&global_cached_probed_caps_mutex);
+			available_sinkcaps = (global_cached_probed_caps != NULL) ? gst_caps_ref(global_cached_probed_caps) : NULL;
+			g_mutex_unlock(&global_cached_probed_caps_mutex);
+
+			if (available_sinkcaps != NULL)
+			{
+				GST_DEBUG_OBJECT(self, "using global cached probed caps as available caps: %" GST_PTR_FORMAT, (gpointer)available_sinkcaps);
+				goto finish;
+			}
+			else
+				GST_DEBUG_OBJECT(self, "use-global-probed-caps-cache is set to TRUE, but no global cached probed caps exist yet");
+		}
+		else
+		{
+			GST_DEBUG_OBJECT(
+				self,
+				"use-global-probed-caps-cache is set to TRUE, but cache-probed-caps is set to FALSE; "
+				"not using/creating global cached probed caps"
+			);
+		}
 	}
 
 	if (self->cached_probed_caps != NULL)
@@ -1523,7 +1584,17 @@ static GstCaps* gst_pw_audio_sink_get_caps(GstBaseSink *basesink, GstCaps *filte
 		gst_pw_audio_format_probe_teardown(self->format_probe);
 
 		if (cache_probed_caps)
+		{
 			gst_caps_replace(&(self->cached_probed_caps), available_sinkcaps);
+			if (use_global_probed_caps_cache)
+			{
+				GST_DEBUG_OBJECT(self, "use-global-probed-caps-cache is set to TRUE; creating global cached probed caps");
+				g_mutex_lock(&global_cached_probed_caps_mutex);
+				gst_caps_replace(&global_cached_probed_caps, available_sinkcaps);
+				GST_MINI_OBJECT_FLAG_SET(global_cached_probed_caps, GST_MINI_OBJECT_FLAG_MAY_BE_LEAKED);
+				g_mutex_unlock(&global_cached_probed_caps_mutex);
+			}
+		}
 
 		goto finish;
 	}
