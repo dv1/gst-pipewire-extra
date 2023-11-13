@@ -197,6 +197,12 @@ struct _GstPwAudioSink
 	 * an unpredictable amount of time.
 	 * This is a gint, not a gboolean, since it is used by the GLib atomic functions. */
 	gint notify_upstream_about_stream_delay;
+	/* This is a snapshot of the gst_base_sink_get_sync() return value, which is the
+	 * current value of the GObject "sync" property. This snapshot is taken in
+	 * gst_pw_audio_sink_start(). Switching synced playback on/off mid-playback is
+	 * not supported, so doing this saves a little time, because the mutex locks that
+	 * gst_base_sink_get_sync() internally does are avoided. */
+	gboolean do_synced_playback;
 	/* The process callback will pass the current pipeline clock time to
 	 * gst_pw_audio_ring_buffer_retrieve_frames(). If synced_playback_started is FALSE,
 	 * that function will be given a skew threshold of 0, forcing the ring buffer to
@@ -1712,6 +1718,8 @@ static gboolean gst_pw_audio_sink_start(GstBaseSink *basesink)
 
 	GST_OBJECT_UNLOCK(self);
 
+	self->do_synced_playback = gst_base_sink_get_sync(basesink);
+
 	if (G_UNLIKELY(self->pipewire_core == NULL))
 	{
 		GST_ELEMENT_ERROR(self, RESOURCE, OPEN_READ_WRITE, ("Could not get PipeWire core"), (NULL));
@@ -2086,7 +2094,7 @@ static GstFlowReturn gst_pw_audio_sink_render_raw(GstPwAudioSink *self, GstBuffe
 		force_discontinuity_handling = TRUE;
 	}
 
-	sync_enabled = gst_base_sink_get_sync(basesink);
+	sync_enabled = self->do_synced_playback;
 
 	/* If the sync property is set to TRUE, and the incoming data is in a TIME
 	 * segment & contains timestamped buffers, create a sub-buffer out of
@@ -3306,16 +3314,28 @@ static void gst_pw_audio_sink_raw_on_process_stream(void *data)
 
 				GstClockTimeDiff effective_skew_threshold = self->synced_playback_started ? self->skew_threshold_snapshot : 0;
 
-				current_time = gst_clock_get_time(GST_ELEMENT_CLOCK(self));
-				GST_LOG_OBJECT(
-					self,
-					"current time: %" GST_TIME_FORMAT "  "
-					"num frames to produce: %" G_GUINT64_FORMAT "  "
-					"upstream pipeline latency: %" GST_TIME_FORMAT,
-					GST_TIME_ARGS(current_time),
-					num_frames_to_produce,
-					GST_TIME_ARGS(upstream_pipeline_latency)
-				);
+				if (self->do_synced_playback)
+				{
+					current_time = gst_clock_get_time(GST_ELEMENT_CLOCK(self));
+
+					GST_LOG_OBJECT(
+						self,
+						"current time: %" GST_TIME_FORMAT "  "
+						"num frames to produce: %" G_GUINT64_FORMAT "  "
+						"upstream pipeline latency: %" GST_TIME_FORMAT,
+						GST_TIME_ARGS(current_time),
+						num_frames_to_produce,
+						GST_TIME_ARGS(upstream_pipeline_latency)
+					);
+				}
+				else
+				{
+					GST_LOG_OBJECT(
+						self,
+						"num frames to produce (without sync): %" G_GUINT64_FORMAT,
+						num_frames_to_produce
+					);
+				}
 
 				if ((self->pw_audio_format.audio_type == GST_PIPEWIRE_AUDIO_TYPE_DSD)
 				 && (self->pw_audio_format.info.dsd_audio_info.format != self->actual_dsd_format))
