@@ -1080,8 +1080,9 @@ static gboolean gst_pw_audio_sink_set_clock(GstElement *element, GstClock *clock
 
 	GST_DEBUG_OBJECT(
 		self,
-		"pipeline is setting clock %" GST_PTR_FORMAT " as the element's clock; is the PW stream clock: %d",
+		"pipeline is setting clock %" GST_PTR_FORMAT " as the element's clock; is the PW stream clock %" GST_PTR_FORMAT ": %d",
 		(gpointer)clock,
+		(gpointer)(self->stream_clock),
 		self->stream_clock_is_pipeline_clock
 	);
 
@@ -1842,6 +1843,21 @@ static gboolean gst_pw_audio_sink_stop(GstBaseSink *basesink)
 	 * the states of the clock base classes. */
 	if (self->stream_clock != NULL)
 	{
+		if (self->stream_clock_is_pipeline_clock)
+		{
+			/* Announce to the pipeline that the previous clock
+			 * is lost and not valid anymore. This is important,
+			 * otherwise, the pipeline might stick to using it
+			 * even though we created a new one. */
+			gst_element_post_message(
+				GST_ELEMENT_CAST(self),
+				gst_message_new_clock_lost(
+					GST_OBJECT_CAST(self),
+					GST_CLOCK_CAST(self->stream_clock)
+				)
+			);
+		}
+
 		gst_object_unref(GST_OBJECT(self->stream_clock));
 		self->stream_clock = gst_pw_stream_clock_new(NULL);
 		g_assert(self->stream_clock != NULL);
