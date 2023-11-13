@@ -110,6 +110,8 @@ struct _GstPwStreamClockClass
 G_DEFINE_TYPE(GstPwStreamClock, gst_pw_stream_clock, GST_TYPE_SYSTEM_CLOCK)
 
 
+static void gst_pw_stream_clock_dispose(GObject *object);
+
 static GstClockTime gst_pw_stream_clock_get_internal_time(GstClock *clock);
 
 static GstClockTime gst_pw_stream_clock_get_current_monotonic_time(GstPwStreamClock *self);
@@ -118,12 +120,15 @@ static GstClockTime gst_pw_stream_clock_get_internal_time_unlocked(GstPwStreamCl
 
 static void gst_pw_stream_clock_class_init(GstPwStreamClockClass *klass)
 {
+	GObjectClass *object_class;
 	GstClockClass *clock_class;
 
 	GST_DEBUG_CATEGORY_INIT(pw_stream_clock_debug, "pwstreamclock", 0, "PipeWire stream based clock");
 
+	object_class = G_OBJECT_CLASS(klass);
 	clock_class = GST_CLOCK_CLASS(klass);
 
+	object_class->dispose          = GST_DEBUG_FUNCPTR(gst_pw_stream_clock_dispose);
 	clock_class->get_internal_time = GST_DEBUG_FUNCPTR(gst_pw_stream_clock_get_internal_time);
 }
 
@@ -141,6 +146,13 @@ static void gst_pw_stream_clock_init(GstPwStreamClock *self)
 
 	self->can_extrapolate = FALSE;
 	self->last_timestamp = 0;
+}
+
+
+static void gst_pw_stream_clock_dispose(GObject *object)
+{
+	GST_DEBUG_OBJECT(object, "disposing of pwstreamclock %s", GST_OBJECT_NAME(object));
+	G_OBJECT_CLASS(gst_pw_stream_clock_parent_class)->dispose(object);
 }
 
 
@@ -229,6 +241,8 @@ GstPwStreamClock* gst_pw_stream_clock_new(GstPwStreamClockGetSysclockTimeFunc ge
 
 	/* Clear the floating flag. */
 	gst_object_ref_sink(GST_OBJECT(stream_clock));
+
+	GST_DEBUG_OBJECT(stream_clock, "created new pwstreamclock %s", GST_OBJECT_NAME(stream_clock));
 
 	return stream_clock;
 }
