@@ -249,7 +249,7 @@ gsize gst_pw_audio_ring_buffer_push_frames(
 		ring_buffer->metrics.current_num_buffered_frames
 	);
 
-	/* Update the oldest_frame_pts. To do this, calculate the PTS of the
+	/* Set the oldest_frame_pts. To do this, calculate the PTS of the
 	 * *newest* data - that is, the PTS that is right at the end of the buffer
 	 * that was just supplied - and subtract the current fill level from it.
 	 * Since the buffered data is made of a sequence of raw frames (there are
@@ -277,23 +277,14 @@ gsize gst_pw_audio_ring_buffer_push_frames(
 		newest_pts = MAX(ring_buffer->current_fill_level, newest_pts);
 		oldest_frame_pts = newest_pts - ring_buffer->current_fill_level;
 
-		/* If an oldest frame PTS is already known, check if the oldest PTS we just
-		 * calculated differs significantly (by >= 1ms). Only log the update if it does. */
-		if (GST_CLOCK_TIME_IS_VALID(ring_buffer->oldest_frame_pts))
-		{
-			GstClockTimeDiff update_delta = GST_CLOCK_DIFF(ring_buffer->oldest_frame_pts, oldest_frame_pts);
-
-			if (ABS(update_delta) > (1 * GST_MSECOND))
-			{
-				GST_INFO_OBJECT(
-					ring_buffer,
-					"updating oldest frame PTS from: %" GST_TIME_FORMAT " to: %" GST_TIME_FORMAT " (delta: %" GST_STIME_FORMAT ")",
-					GST_TIME_ARGS(ring_buffer->oldest_frame_pts),
-					GST_TIME_ARGS(oldest_frame_pts),
-					GST_STIME_ARGS(update_delta)
-				);
-			}
-		}
+		GST_DEBUG_OBJECT(
+			ring_buffer,
+			"set oldest frame pts; newest pts: %" GST_TIME_FORMAT " current fill level: %" GST_TIME_FORMAT
+			" => oldest frame pts: %" GST_TIME_FORMAT,
+			GST_TIME_ARGS(newest_pts),
+			GST_TIME_ARGS(ring_buffer->current_fill_level),
+			GST_TIME_ARGS(oldest_frame_pts)
+		);
 
 		ring_buffer->oldest_frame_pts = oldest_frame_pts;
 	}
