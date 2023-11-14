@@ -3695,15 +3695,34 @@ static void gst_pw_audio_sink_encoded_on_process_stream(void *data)
 		 * It should not be empty, but better safe than sorry. */
 		while ((gst_queue_array_get_length(self->encoded_data_queue) > 0) && (accumulated_duration < self->quantum_size_in_ns))
 		{
+			uint32_t new_chunk_size;
+			gboolean out_of_bounds = FALSE;
+
 			frame = gst_queue_array_pop_head(self->encoded_data_queue);
 
 			gst_buffer_map(frame, &map_info, GST_MAP_READ);
-			memcpy((guint8 *)(inner_spa_data->data) + inner_spa_data->chunk->size, map_info.data, map_info.size);
-			inner_spa_data->chunk->size += map_info.size;
+			new_chunk_size = inner_spa_data->chunk->size + map_info.size;
+			if (G_LIKELY(new_chunk_size <= inner_spa_data->maxsize))
+			{
+				memcpy((guint8 *)(inner_spa_data->data) + inner_spa_data->chunk->size, map_info.data, map_info.size);
+				inner_spa_data->chunk->size = new_chunk_size;
+			}
+			else
+				out_of_bounds = TRUE;
 			gst_buffer_unmap(frame, &map_info);
 
 			accumulated_duration += GST_BUFFER_DURATION(frame);
 			gst_buffer_unref(frame);
+
+			if (G_UNLIKELY(out_of_bounds))
+			{
+				GST_ERROR_OBJECT(
+					self,
+					"out of bounds error: the attempt to write encoded data into the SPA data structure would exceed the SPA data maxsize %" PRIu32,
+					inner_spa_data->maxsize
+				);
+				goto finish;
+			}
 
 			GST_LOG_OBJECT(
 				self,
