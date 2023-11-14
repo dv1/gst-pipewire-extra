@@ -2897,8 +2897,37 @@ static void gst_pw_audio_sink_drain_stream_and_audio_data_buffer(GstPwAudioSink 
 			}
 			else
 			{
-				GST_DEBUG_OBJECT(self, "audio data buffer still contains data; current audio data buffer fill level: %" GST_TIME_FORMAT, GST_TIME_ARGS(current_fill_level));
-				g_cond_wait(&(self->audio_data_buffer_cond), &(self->audio_data_buffer_mutex));
+				if (g_atomic_int_get(&(self->paused)))
+				{
+					/* This is a corner case that happens when new caps come in just when the pipeline pauses.
+					 * In that case, set_caps() still gets called right before the pause kicks in, but draining
+					 * can't be completed, because it is not possible to do so while paused.
+					 *
+					 * The proper solution would be to have reference counted audio data buffers, and create
+					 * a new one in set_caps() while the old one drains. Only when the old one is done can
+					 * the pause be completed. (The old audio data buffer is then unref'd.) But this change
+					 * would modify a lot of places in the sink, and thus risk a lot of regressions, so this
+					 * is currently not done. Instead, the draining is omitted in this corner case, which
+					 * loses data, but does not risk such regressions.
+					 *
+					 * TODO: Look into how to properly refactor the code for this.
+					 */
+					GST_DEBUG_OBJECT(
+						self,
+						"audio data buffer still contains data but can't finish draining (sink is paused); current audio data buffer fill level: %" GST_TIME_FORMAT,
+						GST_TIME_ARGS(current_fill_level)
+					);
+					break;
+				}
+				else
+				{
+					GST_DEBUG_OBJECT(
+						self,
+						"audio data buffer still contains data; current audio data buffer fill level: %" GST_TIME_FORMAT,
+						GST_TIME_ARGS(current_fill_level)
+					);
+					g_cond_wait(&(self->audio_data_buffer_cond), &(self->audio_data_buffer_mutex));
+				}
 			}
 		}
 	}
