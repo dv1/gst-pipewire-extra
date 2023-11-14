@@ -986,7 +986,6 @@ static GstStateChangeReturn gst_pw_audio_sink_change_state(GstElement *element, 
 			GST_DEBUG_OBJECT(self, "setting paused flag and deactivating stream (if not already inactive) before PLAYING->PAUSED state change");
 
 			pw_thread_loop_lock(self->pipewire_core->loop);
-			gst_pw_audio_sink_drain_stream_unlocked(self);
 			gst_pw_audio_sink_activate_stream_unlocked(self, FALSE);
 			pw_thread_loop_unlock(self->pipewire_core->loop);
 
@@ -1034,6 +1033,46 @@ static GstStateChangeReturn gst_pw_audio_sink_change_state(GstElement *element, 
 
 	switch (transition)
 	{
+		case GST_STATE_CHANGE_PLAYING_TO_PAUSED:
+			/* Freeze our stream clock to bridge the gap caused by the pause
+			 * as well as the time it takes the pw_stream to start up again
+			 * when the element is unpaused. A frozen clock keeps returning
+			 * the same timestamp. This is important, since the base_time
+			 * offset is automatically picked by the pipeline during the
+			 * paused->playing state change, and that offset is what is used
+			 * for translating buffer timestamps to clock-time. If the clock
+			 * weren't frozen, it would advance after the base-time is set,
+			 * and keep advancing while the pw_stream is initialized, causing
+			 * the first N milliseconds worth of raw data to be expired.
+			 *
+			 * For example, suppose that the clock's current time is 1000
+			 * when the base-time is set during a paused->playing state chage,
+			 * meaning that the base-time is now 1000. Then, let's assume
+			 * that it takes 200ms for the pw_stream to be fully reactivated.
+			 * Because the buffer timestamps are translated to clock-time by
+			 * adding base-time to them, this then means that the first 200ms
+			 * of incoming upstream data are expired, and are subsequently
+			 * dropped. This is avoided by the clock freeze, since no time
+			 * "passes" during that period.
+			 *
+			 * Furthermore, the oldest_frame_pts is set to the clock's current
+			 * time (which is later also the exact same timestamp that is used
+			 * as the base-time). That way, the data inside the ring buffer is
+			 * not lost, nor are nullsamples prepended to the retrieved data,
+			 * since the oldest_frame_pts then indicates a seamless continuation
+			 * (which is what we want after resume).
+			 *
+			 * The oldest_frame_pts is only set if the stream clock is the
+			 * pipeline clock, however, since this relies on the stream clock
+			 * freeze effectively halting the pipeline. If the stream clock
+			 * isn' the pipeline clock, then the pipeline clock advances during
+			 * the pause-resume gap and the pw_steam reactivation period, so
+			 * setting the oldest_frame_pts accomplishes nothing then. */
+			gst_pw_stream_clock_freeze(self->stream_clock);
+			if (self->stream_clock_is_pipeline_clock)
+				self->ring_buffer->oldest_frame_pts = gst_clock_get_time(GST_ELEMENT_CLOCK(self));
+			break;
+
 		case GST_STATE_CHANGE_PAUSED_TO_PLAYING:
 		{
 			GstClockTime base_time = gst_element_get_base_time(GST_ELEMENT_CAST(self));
