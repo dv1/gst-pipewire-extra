@@ -410,7 +410,8 @@ GstPwAudioRingBufferRetrievalResult gst_pw_audio_ring_buffer_retrieve_frames(
 
 			GST_DEBUG_OBJECT(
 				ring_buffer,
-				"buffered frames window is entirely in the past - all frames have expired"
+				"buffered frames window is entirely in the past - all %" G_GUINT64_FORMAT " frames have expired",
+				ring_buffer->metrics.current_num_buffered_frames
 			);
 
 			gst_pw_audio_format_write_silence_frames(

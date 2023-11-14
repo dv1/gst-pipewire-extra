@@ -253,6 +253,10 @@ void gst_pw_stream_clock_freeze(GstPwStreamClock *stream_clock)
 	g_assert(stream_clock != NULL);
 
 	GST_OBJECT_LOCK(stream_clock);
+	if (GST_CLOCK_TIME_IS_VALID(stream_clock->last_timestamp))
+		GST_DEBUG_OBJECT(stream_clock, "freezing clock; last timestamp: %" GST_TIME_FORMAT, GST_TIME_ARGS(stream_clock->last_timestamp));
+	else
+		GST_DEBUG_OBJECT(stream_clock, "freezing clock; no last timestamp present");
 	stream_clock->can_extrapolate = FALSE;
 	stream_clock->previous_driver_clock_time = GST_CLOCK_TIME_NONE;
 	stream_clock->previous_system_clock_time = GST_CLOCK_TIME_NONE;
