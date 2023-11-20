@@ -1070,20 +1070,64 @@ static GstStateChangeReturn gst_pw_audio_sink_change_state(GstElement *element, 
 			 * setting the oldest_frame_pts accomplishes nothing then. */
 			gst_pw_stream_clock_freeze(self->stream_clock);
 			if (self->stream_clock_is_pipeline_clock)
-				self->ring_buffer->oldest_frame_pts = gst_clock_get_time(GST_ELEMENT_CLOCK(self));
+			{
+				GstClock *clock;
+
+				GST_OBJECT_LOCK(self);
+
+				clock = GST_ELEMENT_CLOCK(self);
+				if ((clock != NULL) && (self->ring_buffer != NULL))
+				{
+					GST_DEBUG_OBJECT(self, "clock %p ring_buffer %p", clock, self->ring_buffer);
+					self->ring_buffer->oldest_frame_pts = gst_clock_get_time(clock);
+					GST_DEBUG_OBJECT(
+						self,
+						"set oldest_frame_pts to %" GST_TIME_FORMAT " after stream clock freeze",
+						GST_TIME_ARGS(self->ring_buffer->oldest_frame_pts)
+					);
+				}
+				else if (self->ring_buffer != NULL)
+				{
+					self->ring_buffer->oldest_frame_pts = GST_CLOCK_TIME_NONE;
+					GST_DEBUG_OBJECT(
+						self,
+						"reset oldest_frame_pts since the sink no longer has a clock set by the pipeline"
+					);
+				}
+
+				GST_OBJECT_UNLOCK(self);
+			}
 			break;
 
 		case GST_STATE_CHANGE_PAUSED_TO_PLAYING:
 		{
-			GstClockTime base_time = gst_element_get_base_time(GST_ELEMENT_CAST(self));
-			GstClockTime current_time = gst_clock_get_time(GST_ELEMENT_CLOCK(self));
+			GstClock *clock;
+			GstClockTime base_time, current_time;
 
-			GST_DEBUG_OBJECT(
-				self,
-				"base-time is now: %" GST_TIME_FORMAT " current time: %" GST_TIME_FORMAT,
-				GST_TIME_ARGS(base_time),
-				GST_TIME_ARGS(current_time)
-			);
+			GST_OBJECT_LOCK(self);
+			clock = GST_ELEMENT_CLOCK(self);
+			current_time = (clock != NULL) ? gst_clock_get_time(clock) : GST_CLOCK_TIME_NONE;
+			GST_OBJECT_UNLOCK(self);
+
+			base_time = gst_element_get_base_time(GST_ELEMENT_CAST(self));
+
+			if (clock != NULL)
+			{
+				GST_DEBUG_OBJECT(
+					self,
+					"base-time is now: %" GST_TIME_FORMAT "; current time: %" GST_TIME_FORMAT,
+					GST_TIME_ARGS(base_time),
+					GST_TIME_ARGS(current_time)
+				);
+			}
+			else
+			{
+				GST_DEBUG_OBJECT(
+					self,
+					"base-time is now: %" GST_TIME_FORMAT "; no current time known since sink has no clock set by the pipeline",
+					GST_TIME_ARGS(base_time)
+				);
+			}
 
 			break;
 		}
