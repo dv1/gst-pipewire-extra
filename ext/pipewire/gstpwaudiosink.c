@@ -1380,8 +1380,8 @@ static gboolean gst_pw_audio_sink_set_caps(GstBaseSink *basesink, GstCaps *caps)
 	 * - PW_STREAM_FLAG_MAP_BUFFERS to not have to memory-map PW buffers manually.
 	 * - PW_STREAM_FLAG_INACTIVE since we want to decide explicitly when the stream starts.
 	 * - PW_STREAM_FLAG_RT_PROCESS to force the process stream event to be called in the same thread
-	 *   that does the processing in the PipeWire graph. Necessary to safely fetch the rate_diff value
-	 *   from the SPA IO position.
+	 *   that does the processing in the PipeWire graph. Necessary to safely access the spa_rate_match
+	 *   (which is needed for ASRC based clock drift compensation).
 	 */
 	flags = PW_STREAM_FLAG_MAP_BUFFERS | PW_STREAM_FLAG_INACTIVE | PW_STREAM_FLAG_RT_PROCESS;
 	if (autoconnect)
@@ -3150,8 +3150,8 @@ static void gst_pw_audio_sink_io_changed(void *data, uint32_t id, void *area, G_
 	{
 		case SPA_IO_Position:
 		{
-			/* Retrieve SPA IO position pointer for keeping track of the rate_diff.
-			 * rate_diff is then accessed in gst_pw_audio_sink_on_process_stream(). */
+			/* Retrieve SPA IO position pointer for keeping track of spa_rate_match.
+			 * spa_rate_match is then accessed in gst_pw_audio_sink_raw_on_process_stream(). */
 
 			self->spa_position = (struct spa_io_position *)area;
 			if (self->spa_position != NULL)
@@ -3186,8 +3186,8 @@ static void gst_pw_audio_sink_io_changed(void *data, uint32_t id, void *area, G_
 
 		case SPA_IO_RateMatch:
 		{
-			/* Retrieve SPA IO RateMatch pointer. The referred rate_match structure does not
-			 * yet contain valid values at this point. But when gst_pw_audio_sink_on_process_stream()
+			/* Retrieve SPA IO RateMatch pointer. The referred rate_match structure does not yet
+			 * contain valid values at this point. But when gst_pw_audio_sink_raw_on_process_stream()
 			 * is called, it does, so it is usable there.
 			 * The rate matching ASRC is disabled by default, and is enabled explicitly by setting
 			 * the SPA_IO_RATE_MATCH_FLAG_ACTIVE flag. Once enabled, the "rate" field tweaks the ASRC
