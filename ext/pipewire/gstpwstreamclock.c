@@ -192,24 +192,48 @@ static GstClockTime gst_pw_stream_clock_get_internal_time_unlocked(GstPwStreamCl
 {
 	/* This must be called with the object lock taken. */
 
-	GstClockTime sysclock_time, driver_clock_time;
+	GstClockTime system_clock_time, driver_clock_time;
+	GstClockTimeDiff system_clock_time_diff;
 
 	if (G_UNLIKELY(!self->can_extrapolate))
 		return self->last_timestamp;
 
 	g_assert(self->get_sysclock_time_func != NULL);
-	sysclock_time = self->get_sysclock_time_func(self);
+	system_clock_time = self->get_sysclock_time_func(self);
 
-	/* Perform piecewise linear extrapolation to get the current driver clock time. */
-	driver_clock_time = gst_util_uint64_scale_round(sysclock_time - self->system_clock_time_offset, self->driver_clock_rate_num, self->driver_clock_rate_denom) + self->driver_clock_time_offset;
+	system_clock_time_diff = GST_CLOCK_DIFF(self->system_clock_time_offset, system_clock_time);
+
+	/* Perform piecewise linear extrapolation to get the current driver clock time.
+	 * Sometimes, the last observation - which defines the system_clock_time_offset - can
+	 * contain a system clock timestamp that is in the future relative to the current
+	 * system clock time. This most notably happens when an ALSA PCM sink is the driver,
+	 * and its timer based scheduling is turned off (= its "api.alsa.disable-tsched"
+	 * param is set to false). In that case, the driver clock time extrapolation has
+	 * to work *backwards*, that is, the start of the extrapolation has to be the
+	 * current system clock time, and the end has to be the system_clock_time_offset.
+	 * (driver_clock_time_offset is not subject to such extrapolations.) */
+	if (G_LIKELY(system_clock_time_diff >= 0))
+	{
+		driver_clock_time = self->driver_clock_time_offset + gst_util_uint64_scale_round(+system_clock_time_diff, self->driver_clock_rate_num, self->driver_clock_rate_denom);
+	}
+	else
+	{
+		GST_LOG_OBJECT(
+			self,
+			"system clock time %" GST_TIME_FORMAT " is behind system clock time offset %" GST_TIME_FORMAT "; driver extrapolated pw_time system clock timestamp",
+			GST_TIME_ARGS(system_clock_time),
+			GST_TIME_ARGS(self->system_clock_time_offset)
+		);
+		driver_clock_time = self->driver_clock_time_offset + gst_util_uint64_scale_round(-system_clock_time_diff, self->driver_clock_rate_num, self->driver_clock_rate_denom);
+	}
 
 	GST_LOG_OBJECT(
 		self,
-		"sysclock time %" G_GUINT64_FORMAT "; sysclock / driver-clock time offsets: %" G_GUINT64_FORMAT " / %" G_GUINT64_FORMAT "; rate: %" G_GUINT64_FORMAT " / %" G_GUINT64_FORMAT "; sysclock - driver-clock diff relative to the offsets: %" G_GINT64_FORMAT "  => driver-clock time %" GST_TIME_FORMAT,
-		sysclock_time,
+		"system clock time time %" G_GUINT64_FORMAT "; system clock / driver clock time offsets: %" G_GUINT64_FORMAT " / %" G_GUINT64_FORMAT "; rate: %" G_GUINT64_FORMAT " / %" G_GUINT64_FORMAT "; system clock - driver clock diff relative to the offsets: %" G_GINT64_FORMAT "  => driver clock time %" GST_TIME_FORMAT,
+		system_clock_time,
 		self->system_clock_time_offset, self->driver_clock_time_offset,
 		self->driver_clock_rate_num, self->driver_clock_rate_denom,
-		GST_CLOCK_DIFF((sysclock_time - self->system_clock_time_offset), (driver_clock_time - self->driver_clock_time_offset)),
+		GST_CLOCK_DIFF(system_clock_time_diff, GST_CLOCK_DIFF(self->driver_clock_time_offset, driver_clock_time)),
 		GST_TIME_ARGS(driver_clock_time)
 	);
 
@@ -224,7 +248,7 @@ static GstClockTime gst_pw_stream_clock_get_internal_time_unlocked(GstPwStreamCl
 	 * "catches up" with the value of last_timestamp. */
 	if (GST_CLOCK_TIME_IS_VALID(self->last_timestamp) && G_UNLIKELY(self->last_timestamp > driver_clock_time))
 	{
-		GST_LOG_OBJECT(self, "last timestamp %" GST_TIME_FORMAT " was higher than new driver-clock time; returning last timestamp to ensure output timestamps remain monotonically increasing", GST_TIME_ARGS(self->last_timestamp));
+		GST_LOG_OBJECT(self, "last timestamp %" GST_TIME_FORMAT " was higher than new driver clock time; returning last timestamp to ensure output timestamps remain monotonically increasing", GST_TIME_ARGS(self->last_timestamp));
 		driver_clock_time = self->last_timestamp;
 	}
 	else
