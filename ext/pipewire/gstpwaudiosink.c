@@ -1078,7 +1078,6 @@ static GstStateChangeReturn gst_pw_audio_sink_change_state(GstElement *element, 
 				clock = GST_ELEMENT_CLOCK(self);
 				if ((clock != NULL) && (self->ring_buffer != NULL))
 				{
-					GST_DEBUG_OBJECT(self, "clock %p ring_buffer %p", clock, self->ring_buffer);
 					self->ring_buffer->oldest_frame_pts = gst_clock_get_time(clock);
 					GST_DEBUG_OBJECT(
 						self,
