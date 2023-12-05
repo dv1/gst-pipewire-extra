@@ -3697,7 +3697,7 @@ static void gst_pw_audio_sink_encoded_on_process_stream(void *data)
 	struct pw_time stream_time;
 	struct pw_buffer *pw_buf;
 	struct spa_data *inner_spa_data;
-	GstBuffer *frame;
+	gboolean produce_null_frame = FALSE;
 
 	GST_LOG_OBJECT(self, COLOR_GREEN "new PipeWire graph tick" COLOR_DEFAULT);
 
@@ -3735,7 +3735,7 @@ static void gst_pw_audio_sink_encoded_on_process_stream(void *data)
 	if (self->accum_excess_encaudio_playtime >= self->quantum_size_in_ns)
 	{
 		GST_LOG_OBJECT(self, "producing null frame to compensate for excess playtime");
-		frame = NULL;
+		produce_null_frame = TRUE;
 		self->accum_excess_encaudio_playtime -= self->quantum_size_in_ns;
 	}
 	else if (self->total_queued_encoded_data_duration < self->quantum_size_in_ns)
@@ -3745,7 +3745,7 @@ static void gst_pw_audio_sink_encoded_on_process_stream(void *data)
 			"insufficient data queued (need at least 1 quantum's worth of queued data; queued: %" GST_TIME_FORMAT " ns); producing null frame",
 			GST_TIME_ARGS(self->total_queued_encoded_data_duration)
 		);
-		frame = NULL;
+		produce_null_frame = TRUE;
 	}
 	else
 	{
@@ -3768,6 +3768,7 @@ static void gst_pw_audio_sink_encoded_on_process_stream(void *data)
 		 * It should not be empty, but better safe than sorry. */
 		while ((gst_queue_array_get_length(self->encoded_data_queue) > 0) && (accumulated_duration < self->quantum_size_in_ns))
 		{
+			GstBuffer *frame;
 			uint32_t new_chunk_size;
 			gboolean out_of_bounds = FALSE;
 
@@ -3823,7 +3824,7 @@ static void gst_pw_audio_sink_encoded_on_process_stream(void *data)
 		g_cond_signal(&(self->audio_data_buffer_cond));
 	}
 
-	if (frame == NULL)
+	if (produce_null_frame)
 	{
 		inner_spa_data->chunk->offset = 0;
 		inner_spa_data->chunk->stride = 0;
