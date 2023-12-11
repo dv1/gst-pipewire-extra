@@ -2753,6 +2753,12 @@ static void gst_pw_audio_sink_activate_stream_unlocked(GstPwAudioSink *self, gbo
 {
 	/* This must be called with the pw_thread_loop_lock taken. */
 
+	/* stream_drained gets reset both when activating and when
+	 * deactivating a stream, since it might get set to TRUE
+	 * in some cases before activating and after deactivating,
+	 * for example, because gst_pw_audio_sink_pw_state_changed()
+	 * is called in the unconnected state after deactivation. */
+
 	if (self->stream_is_active == activate)
 		return;
 
@@ -2763,12 +2769,15 @@ static void gst_pw_audio_sink_activate_stream_unlocked(GstPwAudioSink *self, gbo
 	 * while we are resetting them here. Also reset last_pw_time_ticks,
 	 * since we use that for detecting discontinuities within the
 	 * flow of a pw_stream itself. Since we are just starting the
-	 * stream, we have no "last" pw_time ticks recorded yet. */
+	 * stream, we have no "last" pw_time ticks recorded yet.
+	 * Also reset stream_drained here _before_ the stream actually
+	 * gets activated to avoid race conditions. */
 	if (activate)
 	{
 		gst_pw_audio_sink_reset_drift_compensation_states(self);
 		self->last_pw_time_ticks = 0;
 		self->last_pw_time_ticks_set = FALSE;
+		self->stream_drained = FALSE;
 	}
 
 	pw_stream_set_active(self->stream, activate);
@@ -2777,7 +2786,11 @@ static void gst_pw_audio_sink_activate_stream_unlocked(GstPwAudioSink *self, gbo
 	self->stream_is_active = activate;
 
 	if (!activate)
+	{
+		/* When the stream gets deactivated, reset the stream_drained
+		 * flag _after_ deactivating the stream to avoid race conditions. */
 		self->stream_drained = FALSE;
+	}
 }
 
 
