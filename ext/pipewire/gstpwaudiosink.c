@@ -169,6 +169,10 @@ struct _GstPwAudioSink
 	GstClockTime total_queued_encoded_data_duration;
 	gsize dsd_conversion_buffer_size;
 	guint8 *dsd_conversion_buffer;
+	/* This flag is used for ensuring that during draining, data isn't subjected
+	 * to synchronization related mechanisms. See the comment blocks in
+	 * gst_pw_audio_sink_drain_stream_and_audio_data_buffer() for details. */
+	gboolean draining_ring_buffer;
 
 	/** PCM clock drift compensation states **/
 
@@ -681,6 +685,7 @@ static void gst_pw_audio_sink_init(GstPwAudioSink *self)
 	self->total_queued_encoded_data_duration = 0;
 	self->dsd_conversion_buffer_size = 0;
 	self->dsd_conversion_buffer = NULL;
+	self->draining_ring_buffer = FALSE;
 
 	pi_controller_init(&(self->pi_controller), PI_CONTROLLER_KI_FACTOR, PI_CONTROLLER_KP_FACTOR);
 	gst_pw_audio_sink_reset_drift_compensation_states(self);
@@ -2982,7 +2987,20 @@ static void gst_pw_audio_sink_drain_stream_and_audio_data_buffer(GstPwAudioSink 
 						"audio data buffer still contains data; current audio data buffer fill level: %" GST_TIME_FORMAT,
 						GST_TIME_ARGS(current_fill_level)
 					);
+
+					/* Set the draining_ring_buffer flag while waiting for the ring buffer to be emptied.
+					 * This flag informs the code in gst_pw_audio_sink_raw_on_process_stream() that the
+					 * data in the ring buffer is to be accessed without any synchronization. The reason
+					 * for this is that during the draining process, the buffered frames window keeps
+					 * shrinking (since the ring buffer is being drained). Eventually, it might shrink
+					 * to such an extent that the retrieval window and the buffered frames window no
+					 * longer overlap. This in turn can then lead to audible data loss depending on how
+					 * these windows overlapped in the first place. Solve this by using this flag, which
+					 * essentially instructs gst_pw_audio_sink_raw_on_process_stream() do not use any
+					 * such windows, and use the ring buffer in a simple FIFO like manner instead. */
+					self->draining_ring_buffer = TRUE;
 					g_cond_wait(&(self->audio_data_buffer_cond), &(self->audio_data_buffer_mutex));
+					self->draining_ring_buffer = FALSE;
 				}
 			}
 		}
@@ -3456,17 +3474,28 @@ static void gst_pw_audio_sink_raw_on_process_stream(void *data)
 
 				if (self->do_synced_playback)
 				{
-					current_time = gst_clock_get_time(GST_ELEMENT_CLOCK(self));
+					if (G_UNLIKELY(self->draining_ring_buffer))
+					{
+						GST_LOG_OBJECT(
+							self,
+							"num frames to produce (without sync because ring buffer is being drained): %" G_GUINT64_FORMAT,
+							num_frames_to_produce
+						);
+					}
+					else
+					{
+						current_time = gst_clock_get_time(GST_ELEMENT_CLOCK(self));
 
-					GST_LOG_OBJECT(
-						self,
-						"current time: %" GST_TIME_FORMAT "  "
-						"num frames to produce: %" G_GUINT64_FORMAT "  "
-						"upstream pipeline latency: %" GST_TIME_FORMAT,
-						GST_TIME_ARGS(current_time),
-						num_frames_to_produce,
-						GST_TIME_ARGS(upstream_pipeline_latency)
-					);
+						GST_LOG_OBJECT(
+							self,
+							"current time: %" GST_TIME_FORMAT "  "
+							"num frames to produce: %" G_GUINT64_FORMAT "  "
+							"upstream pipeline latency: %" GST_TIME_FORMAT,
+							GST_TIME_ARGS(current_time),
+							num_frames_to_produce,
+							GST_TIME_ARGS(upstream_pipeline_latency)
+						);
+					}
 				}
 				else
 				{
