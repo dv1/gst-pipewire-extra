@@ -273,6 +273,15 @@ struct _GstPwAudioSink
 	gboolean stream_is_active;
 	struct spa_hook stream_listener;
 	gboolean stream_listener_added;
+	/* This is part of the stream-activated signal mechanism. It is set to TRUE
+	 * in gst_pw_audio_sink_activate_stream_unlocked(). The next time the
+	 * process callback runs, this raised flag will trigger calls that
+	 * eventually lead to the signal being emitted. */
+	gboolean notify_about_activated_stream;
+	/* The seq ID is used for detecting corner cases where the notification
+	 * triggers the associated callback shortly after the stream got disconnected.
+	 * In that case, notification should not continue. */
+	gint activated_stream_seq_id;
 	/* The pointer to the SPA IO position is received in the
 	 * io_changed stream event and accessed in the process event. */
 	struct spa_io_position *spa_position;
@@ -311,7 +320,25 @@ struct _GstPwAudioSink
 struct _GstPwAudioSinkClass
 {
 	GstBaseSinkClass parent_class;
+
+	/* Signal that gets emitted as soon as the pw_stream is _actually_ fully
+	 * activated, meaning that the initial process callback invocation took place.
+	 * This is useful for notifying other threads that are waiting for the
+	 * process callback to start consuming data.
+	 * The sink caps that are current at time of the stream activation are
+	 * passed along to let callers know what format the pw_stream is using.
+	 * This can be important when playing extremely short tracks. */
+	void (*stream_activated)(GstElement *element, GstCaps *sink_caps);
 };
+
+
+enum
+{
+	SIGNAL_STREAM_ACTIVATED,
+	LAST_SIGNAL
+};
+
+static guint gst_pw_audio_sink_signals[LAST_SIGNAL] = { 0 };
 
 
 GMutex global_cached_probed_caps_mutex;
@@ -365,6 +392,10 @@ static void gst_pw_audio_sink_reset_drift_compensation_states(GstPwAudioSink *se
 static void gst_pw_audio_sink_drain_stream_unlocked(GstPwAudioSink *self);
 static void gst_pw_audio_sink_drain_stream_and_audio_data_buffer(GstPwAudioSink *self);
 static void gst_pw_audio_sink_disconnect_stream(GstPwAudioSink *self);
+static void gst_pw_audio_sink_notify_about_activated_stream(GstPwAudioSink *self);
+
+/* This callback is for use with pw_loop_invoke(). */
+static int gst_pw_audio_sink_activated_stream_cb(struct spa_loop *loop, bool async, uint32_t seq, const void *_data, size_t size, void *user_data);
 
 
 /* pw_stream callbacks for both raw and encoded data. */
@@ -454,6 +485,19 @@ static void gst_pw_audio_sink_class_init(GstPwAudioSinkClass *klass)
 	base_sink_class->wait_event  = GST_DEBUG_FUNCPTR(gst_pw_audio_sink_wait_event);
 	base_sink_class->preroll     = GST_DEBUG_FUNCPTR(gst_pw_audio_sink_preroll);
 	base_sink_class->render      = GST_DEBUG_FUNCPTR(gst_pw_audio_sink_render);
+
+	gst_pw_audio_sink_signals[SIGNAL_STREAM_ACTIVATED] = g_signal_new(
+		"stream-activated",
+		G_TYPE_FROM_CLASS(klass),
+		G_SIGNAL_RUN_LAST,
+		G_STRUCT_OFFSET(GstPwAudioSinkClass, stream_activated),
+		NULL,
+		NULL,
+		g_cclosure_marshal_generic,
+		G_TYPE_NONE,
+		1,
+		GST_TYPE_CAPS
+	);
 
 	g_object_class_install_property(
 		object_class,
@@ -709,6 +753,8 @@ static void gst_pw_audio_sink_init(GstPwAudioSink *self)
 	self->stream_is_connected = FALSE;
 	self->stream_is_active = FALSE;
 	self->stream_listener_added = FALSE;
+	self->notify_about_activated_stream = FALSE;
+	self->activated_stream_seq_id = 0;
 	self->spa_position = NULL;
 	self->spa_rate_match = NULL;
 	self->stream_delay_in_ticks = 0;
@@ -1963,6 +2009,11 @@ static gboolean gst_pw_audio_sink_stop(GstBaseSink *basesink)
 	self->accum_excess_encaudio_playtime = 0;
 	self->stream_clock_is_pipeline_clock = FALSE;
 	self->stream_listener_added = FALSE;
+	self->notify_about_activated_stream = FALSE;
+	/* NOTE: activated_stream_seq_id is NOT reset here. This is intentional -
+	 * it is monotonically increased every time the stream is deactivated
+	 * to let the stream-activated notification catch cases where it is
+	 * running after the stream got disconnected. */
 	self->spa_position = NULL;
 	self->spa_rate_match = NULL;
 	self->stream_delay_in_ticks = 0;
@@ -2783,6 +2834,7 @@ static void gst_pw_audio_sink_activate_stream_unlocked(GstPwAudioSink *self, gbo
 		self->last_pw_time_ticks = 0;
 		self->last_pw_time_ticks_set = FALSE;
 		self->stream_drained = FALSE;
+		self->notify_about_activated_stream = TRUE;
 	}
 
 	pw_stream_set_active(self->stream, activate);
@@ -3051,12 +3103,81 @@ static void gst_pw_audio_sink_disconnect_stream(GstPwAudioSink *self)
 	if (!self->stream_is_connected)
 		return;
 
+	/* Atomically increment activated_stream_seq_id here BEFORE the stream
+	 * is actually disconnected. This is necessary to prevent the code inside
+	 * gst_pw_audio_sink_activated_stream_cb() from emitting the stream-activated
+	 * signal. This can otherwise happen with extremely short tracks. For example,
+	 * suppose that a track starts, the process callback asynchronously (!) invokes
+	 * gst_pw_audio_sink_activated_stream_cb. Right after that, the track ends,
+	 * and the stream gets disconnected. The gst_pw_audio_sink_activated_stream_cb
+	 * invocation is then still queued inside self->pipewire_core->loop though,
+	 * and if it is allowed to happen, it will emit a stream-activated signal
+	 * even though the pw_stream just got _deactivated_.
+	 * What we want is to effectively cancel that invocation. Do this by
+	 * using seq IDs. The callback will compare its seq IQ with the current
+	 * value of activated_stream_seq_id. If they are equal, it will emit
+	 * the GLib signal. If they aren't, it will do nothing. Thus, by incrementing
+	 * the activated_stream_seq_id here, that invocation is effectly canceled. */
+	g_atomic_int_inc(&(self->activated_stream_seq_id));
+
 	pw_thread_loop_lock(self->pipewire_core->loop);
 	gst_pw_audio_sink_activate_stream_unlocked(self, FALSE);
 	pw_stream_disconnect(self->stream);
 	pw_thread_loop_unlock(self->pipewire_core->loop);
 
 	self->stream_is_connected = FALSE;
+}
+
+
+static void gst_pw_audio_sink_notify_about_activated_stream(GstPwAudioSink *self)
+{
+	/* NOTE: This must be called from within a process callback. */
+
+	if (G_UNLIKELY(self->notify_about_activated_stream))
+	{
+		GST_DEBUG_OBJECT(self, "notifying about activated stream");
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+		pw_loop_invoke(
+			pw_thread_loop_get_loop(self->pipewire_core->loop),
+			gst_pw_audio_sink_activated_stream_cb,
+			g_atomic_int_get(&(self->activated_stream_seq_id)),
+			NULL,
+			0,
+			false,
+			self
+		);
+#pragma GCC diagnostic pop
+		self->notify_about_activated_stream = FALSE;
+	}
+}
+
+
+static int gst_pw_audio_sink_activated_stream_cb(
+	G_GNUC_UNUSED struct spa_loop *loop,
+	G_GNUC_UNUSED bool async,
+	G_GNUC_UNUSED uint32_t seq,
+	G_GNUC_UNUSED const void *_data,
+	G_GNUC_UNUSED size_t size,
+	void *user_data)
+{
+	/* NOTE: This is called in the threaded PipeWire loop (self->pipewire_core->loop),
+	 * not in any particular GStreamer thread nor in a pw_stream dataloop thread.
+	 * It is important to not block here. Just emit the GLib signal and then exit. */
+
+	GstPwAudioSink *self = GST_PW_AUDIO_SINK_CAST(user_data);
+
+	/* See the comment in gst_pw_audio_sink_disconnect_stream()
+	 * for why the seq ID is checked this way. */
+	if (g_atomic_int_get(&(self->activated_stream_seq_id)) == (gint)seq)
+	{
+		GST_DEBUG_OBJECT(self, "got activated stream notification with seq ID %" PRIu32 "; emitting stream-activated signal", seq);
+		g_signal_emit(self, gst_pw_audio_sink_signals[SIGNAL_STREAM_ACTIVATED], 0, self->sink_caps);
+	}
+	else
+		GST_DEBUG_OBJECT(self, "ignoring expired activated stream notification with seq ID %" PRIu32, seq);
+
+	return 0;
 }
 
 
@@ -3729,6 +3850,11 @@ static void gst_pw_audio_sink_raw_on_process_stream(void *data)
 
 finish:
 	pw_stream_queue_buffer(self->stream, pw_buf);
+
+	/* Call this _after_ the whole data processing happened above.
+	 * That way, it is ensured that the buffers are filled with
+	 * something (even it is just silence) before notifying. */
+	gst_pw_audio_sink_notify_about_activated_stream(self);
 }
 
 
@@ -3877,4 +4003,9 @@ static void gst_pw_audio_sink_encoded_on_process_stream(void *data)
 
 finish:
 	pw_stream_queue_buffer(self->stream, pw_buf);
+
+	/* Call this _after_ the whole data processing happened above.
+	 * That way, it is ensured that the buffers are filled with
+	 * something (even it is just silence) before notifying. */
+	gst_pw_audio_sink_notify_about_activated_stream(self);
 }
