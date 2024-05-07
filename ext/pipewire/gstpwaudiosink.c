@@ -1367,12 +1367,17 @@ static gboolean gst_pw_audio_sink_set_caps(GstBaseSink *basesink, GstCaps *caps)
 
 	GST_DEBUG_OBJECT(self, "got new sink caps %" GST_PTR_FORMAT, (gpointer)caps);
 
-	gst_pw_stream_clock_freeze(self->stream_clock);
-
 	/* Wait until any remaining audio data that uses the old caps is played.
 	 * Then we can safely disconnect the stream and don't lose any audio data. */
 	gst_pw_audio_sink_drain_stream_and_audio_data_buffer(self);
 	gst_pw_audio_sink_disconnect_stream(self);
+
+	/* Freeze the clock _after_ draining and disconnecting. If it were frozen
+	 * before, discontinuities could happen where the stream process callback
+	 * updates the clock after it was frozen, which is not supposed to happen.
+	 * This cannot happen if the clock is frozen after disconnecting the stream,
+	 * because after the disconnect, the process callback is not called anymore. */
+	gst_pw_stream_clock_freeze(self->stream_clock);
 
 	/* After disconnecting we remove the listener if it was previously added.
 	 * This is important, otherwise the stream accumulates listeners -
