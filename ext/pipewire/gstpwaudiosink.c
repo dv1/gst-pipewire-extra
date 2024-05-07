@@ -82,6 +82,7 @@ enum
 	PROP_NODE_DESCRIPTION,
 	PROP_PROBE_FOR_CAPS,
 	PROP_CACHE_PROBED_CAPS,
+	PROP_CUSTOM_PROBED_CAPS,
 	PROP_USE_GLOBAL_PROBED_CAPS_CACHE,
 	PROP_AUTOCONNECT,
 	PROP_ANNOUNCE_PCM_RATE,
@@ -140,6 +141,7 @@ struct _GstPwAudioSink
 	gchar *node_description;
 	gboolean probe_for_caps;
 	gboolean cache_probed_caps;
+	GstCaps *custom_probed_caps;
 	gboolean use_global_probed_caps_cache;
 	gboolean autoconnect;
 	gboolean announce_pcm_rate;
@@ -652,6 +654,18 @@ static void gst_pw_audio_sink_class_init(GstPwAudioSinkClass *klass)
 
 	g_object_class_install_property(
 		object_class,
+		PROP_CUSTOM_PROBED_CAPS,
+		g_param_spec_boxed(
+			"custom-probed-caps",
+			"Custom proped caps",
+			"Use these custom caps as probed caps; overrides probe-for-caps, cache-probed-caps, and use-global-probed-caps-cache properties",
+			GST_TYPE_CAPS,
+			(GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)
+		)
+	);
+
+	g_object_class_install_property(
+		object_class,
 		PROP_USE_GLOBAL_PROBED_CAPS_CACHE,
 		g_param_spec_boolean(
 			"use-global-probed-caps-cache",
@@ -712,6 +726,7 @@ static void gst_pw_audio_sink_init(GstPwAudioSink *self)
 	self->node_description = g_strdup(DEFAULT_NODE_DESCRIPTION);
 	self->probe_for_caps = DEFAULT_PROBE_FOR_CAPS;
 	self->cache_probed_caps = DEFAULT_CACHE_PROBED_CAPS;
+	self->custom_probed_caps = NULL;
 	self->use_global_probed_caps_cache = DEFAULT_USE_GLOBAL_PROBED_CAPS_CACHE;
 	self->autoconnect = DEFAULT_AUTOCONNECT;
 	self->announce_pcm_rate = DEFAULT_ANNOUNCE_PCM_RATE;
@@ -795,6 +810,8 @@ static void gst_pw_audio_sink_finalize(GObject *object)
 	g_free(self->app_name);
 	if (self->stream_properties != NULL)
 		gst_structure_free(self->stream_properties);
+
+	gst_caps_replace(&(self->custom_probed_caps), NULL);
 
 	G_OBJECT_CLASS(gst_pw_audio_sink_parent_class)->finalize(object);
 }
@@ -891,6 +908,12 @@ static void gst_pw_audio_sink_set_property(GObject *object, guint prop_id, GValu
 		case PROP_CACHE_PROBED_CAPS:
 			GST_OBJECT_LOCK(self);
 			self->cache_probed_caps = g_value_get_boolean(value);
+			GST_OBJECT_UNLOCK(self);
+			break;
+
+		case PROP_CUSTOM_PROBED_CAPS:
+			GST_OBJECT_LOCK(self);
+			gst_caps_replace(&(self->custom_probed_caps), (GstCaps *)gst_value_get_caps(value));
 			GST_OBJECT_UNLOCK(self);
 			break;
 
@@ -992,6 +1015,12 @@ static void gst_pw_audio_sink_get_property(GObject *object, guint prop_id, GValu
 		case PROP_CACHE_PROBED_CAPS:
 			GST_OBJECT_LOCK(self);
 			g_value_set_boolean(value, self->cache_probed_caps);
+			GST_OBJECT_UNLOCK(self);
+			break;
+
+		case PROP_CUSTOM_PROBED_CAPS:
+			GST_OBJECT_LOCK(self);
+			gst_value_set_caps(value, self->custom_probed_caps);
 			GST_OBJECT_UNLOCK(self);
 			break;
 
@@ -1550,6 +1579,7 @@ static GstCaps* gst_pw_audio_sink_get_caps(GstBaseSink *basesink, GstCaps *filte
 {
 	GstPwAudioSink *self = GST_PW_AUDIO_SINK(basesink);
 	GstCaps *available_sinkcaps = NULL;
+	GstCaps *custom_probed_caps;
 	gboolean probe_for_caps;
 	gboolean cache_probed_caps;
 	gboolean use_global_probed_caps_cache;
@@ -1561,6 +1591,10 @@ static GstCaps* gst_pw_audio_sink_get_caps(GstBaseSink *basesink, GstCaps *filte
 	GST_OBJECT_LOCK(self);
 	probe_for_caps = self->probe_for_caps;
 	cache_probed_caps = self->cache_probed_caps;
+	/* Ref the custom_probed_caps to avoid potential race conditions if the
+	 * caller is accessing the custom-probed-caps property simultaneously.
+	 * It will be unref'd again once this function execution is finished. */
+	custom_probed_caps = (self->custom_probed_caps != NULL) ? gst_caps_ref(self->custom_probed_caps) : NULL;
 	use_global_probed_caps_cache = self->use_global_probed_caps_cache;
 	target_object_id = self->target_object_id;
 	GST_OBJECT_UNLOCK(self);
@@ -1571,6 +1605,17 @@ static GstCaps* gst_pw_audio_sink_get_caps(GstBaseSink *basesink, GstCaps *filte
 	 * same time. (The GstPwAudioFormatProbe's setup, teardown, and
 	 * probe calls themselves are MT safe, but this does not help here. */
 	g_mutex_lock(&(self->probe_process_mutex));
+
+	if (custom_probed_caps != NULL)
+	{
+		/* Ref the custom_probed_caps again. The ref'ing above will be
+		 * undone when the function finishes. If it weren't ref'd here,
+		 * this get_caps() implementation would return caps whose lifetime
+		 * would be uncertain. */
+		available_sinkcaps = gst_caps_ref(custom_probed_caps);
+		GST_DEBUG_OBJECT(self, "using custom probed caps: %" GST_PTR_FORMAT, (gpointer)custom_probed_caps);
+		goto finish;
+	}
 
 	if (!probe_for_caps)
 	{
@@ -1751,6 +1796,9 @@ use_template_caps:
 
 finish:
 	g_mutex_unlock(&(self->probe_process_mutex));
+
+	if (custom_probed_caps != NULL)
+		gst_caps_unref(custom_probed_caps);
 
 	if (cancelled)
 	{
