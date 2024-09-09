@@ -165,7 +165,7 @@ static GstPipewireAudioTypeDetails const audio_type_details[GST_NUM_PIPEWIRE_AUD
 		.name = "DSD",
 		.template_caps_string = \
 			"audio/x-dsd, " \
-			"format = (string) { DSD_U8, DSD_U32BE, DSD_U16BE, DSD_U32LE, DSD_U16LE }, "
+			"format = (string) { DSDU8, DSDU32BE, DSDU16BE, DSDU32LE, DSDU16LE }, "
 			"rate = (int) [ 1, MAX ], " \
 			"channels = (int) [ 1, MAX ]",
 		/* DSD data can be subdivided, and the ring buffer can
@@ -381,11 +381,11 @@ static gchar const * spa_wma_profile_to_string(enum spa_audio_wma_profile profil
 
 GstPipewireDsdFormat gst_pipewire_dsd_format_from_string(gchar const *str)
 {
-	if (g_strcmp0(str, "DSD_U8") == 0) return GST_PIPEWIRE_DSD_FORMAT_DSD_U8;
-	else if (g_strcmp0(str, "DSD_U16LE") == 0) return GST_PIPEWIRE_DSD_FORMAT_DSD_U16LE;
-	else if (g_strcmp0(str, "DSD_U16BE") == 0) return GST_PIPEWIRE_DSD_FORMAT_DSD_U16BE;
-	else if (g_strcmp0(str, "DSD_U32LE") == 0) return GST_PIPEWIRE_DSD_FORMAT_DSD_U32LE;
-	else if (g_strcmp0(str, "DSD_U32BE") == 0) return GST_PIPEWIRE_DSD_FORMAT_DSD_U32BE;
+	if (g_strcmp0(str, "DSDU8") == 0) return GST_PIPEWIRE_DSD_FORMAT_DSD_U8;
+	else if (g_strcmp0(str, "DSDU16LE") == 0) return GST_PIPEWIRE_DSD_FORMAT_DSD_U16LE;
+	else if (g_strcmp0(str, "DSDU16BE") == 0) return GST_PIPEWIRE_DSD_FORMAT_DSD_U16BE;
+	else if (g_strcmp0(str, "DSDU32LE") == 0) return GST_PIPEWIRE_DSD_FORMAT_DSD_U32LE;
+	else if (g_strcmp0(str, "DSDU32BE") == 0) return GST_PIPEWIRE_DSD_FORMAT_DSD_U32BE;
 	else return GST_PIPEWIRE_DSD_FORMAT_DSD_UNKNOWN;
 }
 
@@ -394,11 +394,11 @@ gchar const * gst_pipewire_dsd_format_to_string(GstPipewireDsdFormat format)
 {
 	switch (format)
 	{
-		case GST_PIPEWIRE_DSD_FORMAT_DSD_U8: return "DSD_U8";
-		case GST_PIPEWIRE_DSD_FORMAT_DSD_U16LE: return "DSD_U16LE";
-		case GST_PIPEWIRE_DSD_FORMAT_DSD_U16BE: return "DSD_U16BE";
-		case GST_PIPEWIRE_DSD_FORMAT_DSD_U32LE: return "DSD_U32LE";
-		case GST_PIPEWIRE_DSD_FORMAT_DSD_U32BE: return "DSD_U32BE";
+		case GST_PIPEWIRE_DSD_FORMAT_DSD_U8: return "DSDU8";
+		case GST_PIPEWIRE_DSD_FORMAT_DSD_U16LE: return "DSDU16LE";
+		case GST_PIPEWIRE_DSD_FORMAT_DSD_U16BE: return "DSDU16BE";
+		case GST_PIPEWIRE_DSD_FORMAT_DSD_U32LE: return "DSDU32LE";
+		case GST_PIPEWIRE_DSD_FORMAT_DSD_U32BE: return "DSDU32BE";
 		default: return NULL;
 	}
 }
@@ -598,7 +598,7 @@ GstCaps* gst_pw_audio_format_fixate_caps(GstCaps *caps)
 	}
 	else if (g_strcmp0(gst_structure_get_name(s), "audio/x-dsd") == 0)
 	{
-		gst_structure_fixate_field_string(s, "format", "DSD_U8");
+		gst_structure_fixate_field_string(s, "format", "DSDU8");
 		gst_structure_fixate_field_nearest_int(s, "channels", 2);
 		gst_structure_fixate_field_nearest_int(s, "rate", GST_PIPEWIRE_DSD_DSD64_BYTE_RATE);
 	}
@@ -1443,13 +1443,13 @@ gboolean gst_pw_audio_format_build_spa_pod_for_probing(
  * equivalent to the return value of GST_AUDIO_INFO_BPF().
  *
  * NOTE: In DSD, the "stride" equals the DSD format width multiplied
- * by the number of channels. For example, DSD_U32BE has 4 bytes,
+ * by the number of channels. For example, DSDU32BE has 4 bytes,
  * and with 2 channels, this means the stride equals 8 bytes.
  * However, in DSD, the format specifies the *grouping* of DSD bits.
- * There is no real "sample format" in DSD. DSD_U32BE contains 32
- * DSD bits, while DSD_U8 contains 8 DSD bits. This means that unlike
+ * There is no real "sample format" in DSD. DSDU32BE contains 32
+ * DSD bits, while DSDU8 contains 8 DSD bits. This means that unlike
  * with PCM, different DSD formats imply different playtimes. For
- * example, DSD_U32BE covers 4 times as much playtime as DSD_U8. This
+ * example, DSDU32BE covers 4 times as much playtime as DSDU8. This
  * is important to keep in mind when converting between DSD formats.
  *
  * The stride is needed by PipeWire SPA data chunks and also
