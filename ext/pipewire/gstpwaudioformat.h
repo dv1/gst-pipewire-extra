@@ -27,6 +27,7 @@
 
 #include <gst/gst.h>
 #include <gst/audio/audio.h>
+#include <gst/audio/gstdsd.h>
 #include "gstpipewirecore.h"
 
 
@@ -52,64 +53,6 @@ typedef enum
 }
 GstPipewireAudioType;
 
-
-// XXX: The DSD specific enum and struct are temporary until GStreamer upstream supports DSD
-
-#define GST_PIPEWIRE_DSD_DSD64_BITRATE (44100 * 64)
-#define GST_PIPEWIRE_DSD_DSD64_BYTE_RATE (GST_PIPEWIRE_DSD_DSD64_BITRATE / 8)
-
-typedef enum
-{
-	GST_PIPEWIRE_DSD_FORMAT_DSD_UNKNOWN = 0,
-
-	GST_PIPEWIRE_DSD_FORMAT_DSD_U8,
-	GST_PIPEWIRE_DSD_FORMAT_DSD_U16LE,
-	GST_PIPEWIRE_DSD_FORMAT_DSD_U16BE,
-	GST_PIPEWIRE_DSD_FORMAT_DSD_U32LE,
-	GST_PIPEWIRE_DSD_FORMAT_DSD_U32BE,
-
-	GST_NUM_PIPEWIRE_DSD_FORMATS,
-
-	GST_PIPEWIRE_DSD_FIRST_VALID_FORMAT = GST_PIPEWIRE_DSD_FORMAT_DSD_U8
-}
-GstPipewireDsdFormat;
-
-GstPipewireDsdFormat gst_pipewire_dsd_format_from_string(gchar const *str);
-gchar const * gst_pipewire_dsd_format_to_string(GstPipewireDsdFormat format);
-guint gst_pipewire_dsd_format_get_width(GstPipewireDsdFormat format);
-
-/**
- * gst_pipewire_dsd_format_is_le:
- * @format The format.
- *
- * Useful for determining whether a format is a little-endian.
- * GST_PIPEWIRE_DSD_FORMAT_DSD_U8 and GST_PIPEWIRE_DSD_FORMAT_DSD_UNKNOWN
- * are not considered little-endian.
- *
- * Returns: TRUE if the format is a little-endian one.
- */
-inline static gboolean gst_pipewire_dsd_format_is_le(GstPipewireDsdFormat format)
-{
-	switch (format)
-	{
-		case GST_PIPEWIRE_DSD_FORMAT_DSD_U16LE:
-		case GST_PIPEWIRE_DSD_FORMAT_DSD_U32LE:
-			return TRUE;
-		default:
-			return FALSE;
-	}
-}
-
-void gst_pipewire_dsd_convert(guint8 const *input_data, guint8 *output_data, GstPipewireDsdFormat input_format, GstPipewireDsdFormat output_format, gsize num_output_bytes, gint num_channels);
-
-typedef struct
-{
-	GstPipewireDsdFormat format;
-	gint rate;
-	gint channels;
-	GstAudioChannelPosition positions[64];
-}
-GstPipewireDsdInfo;
 
 typedef struct
 {
@@ -139,7 +82,7 @@ typedef struct
 	union
 	{
 		GstAudioInfo pcm_audio_info;
-		GstPipewireDsdInfo dsd_audio_info;
+		GstDsdInfo dsd_audio_info;
 		GstPipewireEncodedAudioInfo encoded_audio_info;
 	} info;
 }

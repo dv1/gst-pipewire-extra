@@ -149,6 +149,8 @@ GstPipewireAudioTypeDetails;
 
 #endif
 
+#define GST_PW_DSD_FORMATS "{ DSDU8, DSDU32BE, DSDU16BE, DSDU32LE, DSDU16LE }"
+
 
 static GstPipewireAudioTypeDetails const audio_type_details[GST_NUM_PIPEWIRE_AUDIO_TYPES] = {
 	/* PCM */
@@ -164,10 +166,12 @@ static GstPipewireAudioTypeDetails const audio_type_details[GST_NUM_PIPEWIRE_AUD
 	{
 		.name = "DSD",
 		.template_caps_string = \
-			"audio/x-dsd, " \
-			"format = (string) { DSDU8, DSDU32BE, DSDU16BE, DSDU32LE, DSDU16LE }, "
-			"rate = (int) [ 1, MAX ], " \
-			"channels = (int) [ 1, MAX ]",
+			GST_DSD_MEDIA_TYPE ", "                      \
+			"format = (string) " GST_PW_DSD_FORMATS ", " \
+			"rate = " GST_AUDIO_RATE_RANGE ", "          \
+			"layout = (string) { interleaved }, "        \
+			"reversed-bytes = (gboolean) { false }, "    \
+			"channels = " GST_AUDIO_CHANNELS_RANGE,
 		/* DSD data can be subdivided, and the ring buffer can
 		 * be used with such data, so mark this as true. However,
 		 * DSD cannot be (easily) processed, unlike PCM. */
@@ -379,110 +383,6 @@ static gchar const * spa_wma_profile_to_string(enum spa_audio_wma_profile profil
 }
 
 
-GstPipewireDsdFormat gst_pipewire_dsd_format_from_string(gchar const *str)
-{
-	if (g_strcmp0(str, "DSDU8") == 0) return GST_PIPEWIRE_DSD_FORMAT_DSD_U8;
-	else if (g_strcmp0(str, "DSDU16LE") == 0) return GST_PIPEWIRE_DSD_FORMAT_DSD_U16LE;
-	else if (g_strcmp0(str, "DSDU16BE") == 0) return GST_PIPEWIRE_DSD_FORMAT_DSD_U16BE;
-	else if (g_strcmp0(str, "DSDU32LE") == 0) return GST_PIPEWIRE_DSD_FORMAT_DSD_U32LE;
-	else if (g_strcmp0(str, "DSDU32BE") == 0) return GST_PIPEWIRE_DSD_FORMAT_DSD_U32BE;
-	else return GST_PIPEWIRE_DSD_FORMAT_DSD_UNKNOWN;
-}
-
-
-gchar const * gst_pipewire_dsd_format_to_string(GstPipewireDsdFormat format)
-{
-	switch (format)
-	{
-		case GST_PIPEWIRE_DSD_FORMAT_DSD_U8: return "DSDU8";
-		case GST_PIPEWIRE_DSD_FORMAT_DSD_U16LE: return "DSDU16LE";
-		case GST_PIPEWIRE_DSD_FORMAT_DSD_U16BE: return "DSDU16BE";
-		case GST_PIPEWIRE_DSD_FORMAT_DSD_U32LE: return "DSDU32LE";
-		case GST_PIPEWIRE_DSD_FORMAT_DSD_U32BE: return "DSDU32BE";
-		default: return NULL;
-	}
-}
-
-
-guint gst_pipewire_dsd_format_get_width(GstPipewireDsdFormat format)
-{
-	switch (format)
-	{
-		case GST_PIPEWIRE_DSD_FORMAT_DSD_U8: return 1;
-		case GST_PIPEWIRE_DSD_FORMAT_DSD_U16LE: return 2;
-		case GST_PIPEWIRE_DSD_FORMAT_DSD_U16BE: return 2;
-		case GST_PIPEWIRE_DSD_FORMAT_DSD_U32LE: return 4;
-		case GST_PIPEWIRE_DSD_FORMAT_DSD_U32BE: return 4;
-		default: return 0;
-	}
-}
-
-
-/**
- * @gst_pipewire_dsd_convert:
- * @input_data Pointer to memory block to read input DSD data from for conversion.
- * @output_data Pointer to memory block where the converted DSD data shall be written to.
- * @input_format DSD format of the input data.
- * @output_format DSD format of the output data.
- * @num_output_bytes Number of output bytes.
- * @num_channels Number of DSD input data channels. Must be >0.
- *
- * Converts the input DSD data from input_data, converting from the input_format to the
- * output_format, and writes the converted result to output_data. If both formats are
- * equal, this just memcpy()'s the first num_output_bytes of input_data to output_data.
- *
- * num_output_bytes must not be greater than the size of the memory block that input_data
- * points to, but must be at least as large as the stride of the output data (the stride
- * being gst_pipewire_dsd_format_get_width(output_format) * num_channels), and needs to be
- * an integer multiple of that stride.
- */
-void gst_pipewire_dsd_convert(guint8 const *input_data, guint8 *output_data, GstPipewireDsdFormat input_format, GstPipewireDsdFormat output_format, gsize num_output_bytes, gint num_channels)
-{
-	guint out_index;
-	guint in_word_width, out_word_width;
-	guint in_stride, out_stride;
-	gboolean input_is_le = gst_pipewire_dsd_format_is_le(input_format);
-	gboolean output_is_le = gst_pipewire_dsd_format_is_le(output_format);
-
-	if (input_format == output_format)
-	{
-		memcpy(output_data, input_data, num_output_bytes);
-		return;
-	}
-
-	in_word_width = gst_pipewire_dsd_format_get_width(input_format);
-	out_word_width = gst_pipewire_dsd_format_get_width(output_format);
-	in_stride = in_word_width * num_channels;
-	out_stride = out_word_width * num_channels;
-
-	for (out_index = 0; out_index < num_output_bytes; ++out_index)
-	{
-		guint in_word_index, in_word_offset;
-		guint out_word_index, out_word_offset;
-		guint in_index;
-		guint channel_nr;
-		guint position;
-
-		out_word_index = out_index / out_word_width;
-		out_word_offset = out_index - out_word_index * out_word_width;
-		if (output_is_le)
-			out_word_offset = out_word_width - 1 - out_word_offset;
-
-		channel_nr = out_word_index % num_channels;
-		position = (out_index / out_stride) * out_word_width + out_word_offset;
-
-		in_word_index = (position / in_word_width) * in_stride + channel_nr * in_word_width;
-		in_word_offset = position % in_word_width;
-		if (input_is_le)
-			in_word_offset = in_word_width - 1 - in_word_offset;
-
-		in_index = in_word_index + in_word_offset;
-
-		output_data[out_index] = input_data[in_index];
-	}
-}
-
-
 /**
  * gst_pw_audio_format_get_audio_type_name:
  * @audio_type Audio type to get a name for.
@@ -596,11 +496,11 @@ GstCaps* gst_pw_audio_format_fixate_caps(GstCaps *caps)
 		if (gst_structure_has_field(s, "endianness"))
 			gst_structure_fixate_field_nearest_int(s, "endianness", G_BYTE_ORDER);
 	}
-	else if (g_strcmp0(gst_structure_get_name(s), "audio/x-dsd") == 0)
+	else if (g_strcmp0(gst_structure_get_name(s), GST_DSD_MEDIA_TYPE) == 0)
 	{
 		gst_structure_fixate_field_string(s, "format", "DSDU8");
 		gst_structure_fixate_field_nearest_int(s, "channels", 2);
-		gst_structure_fixate_field_nearest_int(s, "rate", GST_PIPEWIRE_DSD_DSD64_BYTE_RATE);
+		gst_structure_fixate_field_nearest_int(s, "rate", GST_DSD_MAKE_DSD_RATE_44x(64));
 	}
 
 	/* For the remaining fields, use default fixation. */
@@ -649,7 +549,7 @@ gboolean gst_pw_audio_format_from_caps(GstPwAudioFormat *pw_audio_format, GstObj
 
 	if (g_strcmp0(media_type, "audio/x-raw") == 0)
 		pw_audio_format->audio_type = GST_PIPEWIRE_AUDIO_TYPE_PCM;
-	else if (g_strcmp0(media_type, "audio/x-dsd") == 0)
+	else if (g_strcmp0(media_type, GST_DSD_MEDIA_TYPE) == 0)
 		pw_audio_format->audio_type = GST_PIPEWIRE_AUDIO_TYPE_DSD;
 	else if (g_strcmp0(media_type, "audio/mpeg") == 0)
 		/* This also includes AAC. MP3 and AAC are distinguished
@@ -690,86 +590,14 @@ gboolean gst_pw_audio_format_from_caps(GstPwAudioFormat *pw_audio_format, GstObj
 
 		case GST_PIPEWIRE_AUDIO_TYPE_DSD:
 		{
-			GstPipewireDsdInfo *dsd_audio_info = &(pw_audio_format->info.dsd_audio_info);
-			gchar const *format_str = NULL;
-			guint64 channel_mask = 0;
-
-			format_str = gst_structure_get_string(fmt_structure, "format");
-			if (format_str == NULL)
+			if (!gst_dsd_info_from_caps(&(pw_audio_format->info.dsd_audio_info), caps))
 			{
-				GST_ERROR_OBJECT(parent, "caps have no format field; caps: %" GST_PTR_FORMAT, (gpointer)caps);
+				GST_ERROR_OBJECT(
+					parent,
+					"could not convert caps \"%" GST_PTR_FORMAT "\" to a DSD audio info structure",
+					(gpointer)caps
+				);
 				goto error;
-			}
-
-			dsd_audio_info->format = gst_pipewire_dsd_format_from_string(format_str);
-			if (dsd_audio_info->format == GST_PIPEWIRE_DSD_FORMAT_DSD_UNKNOWN)
-			{
-				GST_ERROR_OBJECT(parent, "caps have unsupported/invalid format field; caps: %" GST_PTR_FORMAT, (gpointer)caps);
-				goto error;
-			}
-
-			if (!gst_structure_get_int(fmt_structure, "rate", &(dsd_audio_info->rate)))
-			{
-				GST_ERROR_OBJECT(parent, "caps have no rate field; caps: %" GST_PTR_FORMAT, (gpointer)caps);
-				goto error;
-			}
-
-			if (dsd_audio_info->rate < 1)
-			{
-				GST_ERROR_OBJECT(parent, "caps have invalid rate field; caps: %" GST_PTR_FORMAT, (gpointer)caps);
-				goto error;
-			}
-
-			if (!gst_structure_get_int(fmt_structure, "channels", &(dsd_audio_info->channels)))
-			{
-				GST_ERROR_OBJECT(parent, "caps have no channels field; caps: %" GST_PTR_FORMAT, (gpointer)caps);
-				goto error;
-			}
-
-			if (dsd_audio_info->channels < 1)
-			{
-				GST_ERROR_OBJECT(parent, "caps have invalid channels field; caps: %" GST_PTR_FORMAT, (gpointer)caps);
-				goto error;
-			}
-
-			if (!gst_structure_get(fmt_structure, "channel-mask", GST_TYPE_BITMASK, &channel_mask, NULL) ||
-				((channel_mask == 0) && (dsd_audio_info->channels == 1))
-			)
-			{
-				switch (dsd_audio_info->channels)
-				{
-					case 1:
-						dsd_audio_info->positions[0] = GST_AUDIO_CHANNEL_POSITION_MONO;
-						break;
-
-					case 2:
-						dsd_audio_info->positions[0] = GST_AUDIO_CHANNEL_POSITION_FRONT_LEFT;
-						dsd_audio_info->positions[1] = GST_AUDIO_CHANNEL_POSITION_FRONT_RIGHT;
-						break;
-
-					default:
-						GST_ERROR_OBJECT(parent, "caps indicate raw multichannel data but have no channel-mask field; caps: %" GST_PTR_FORMAT, (gpointer)caps);
-						goto error;
-				}
-			}
-			else if (channel_mask == 0)
-			{
-				gint i;
-				for (i = 0; i < MIN(64, dsd_audio_info->channels); i++)
-					dsd_audio_info->positions[i] = GST_AUDIO_CHANNEL_POSITION_NONE;
-			}
-			else
-			{
-				if (!gst_audio_channel_positions_from_mask(dsd_audio_info->channels, channel_mask, dsd_audio_info->positions))
-				{
-					GST_ERROR_OBJECT(
-						parent,
-						"invalid channel mask 0x%016" G_GINT64_MODIFIER "x for %d channels",
-						channel_mask,
-						dsd_audio_info->channels
-					);
-					goto error;
-				}
 			}
 
 			break;
@@ -1037,22 +865,26 @@ gboolean gst_pw_audio_format_to_spa_pod(
 
 		case GST_PIPEWIRE_AUDIO_TYPE_DSD:
 		{
-			uint32_t spa_channel_positions[SPA_AUDIO_MAX_CHANNELS];
 			gint interleave;
+			GstDsdFormat dsd_audio_format;
+			gint rate;
 			gint num_channels;
+			uint32_t spa_channel_positions[SPA_AUDIO_MAX_CHANNELS];
 
-			num_channels = pw_audio_format->info.dsd_audio_info.channels;
+			dsd_audio_format = GST_DSD_INFO_FORMAT(&(pw_audio_format->info.dsd_audio_info));
+			rate = GST_DSD_INFO_RATE(&(pw_audio_format->info.dsd_audio_info));
+			num_channels = GST_DSD_INFO_CHANNELS(&(pw_audio_format->info.dsd_audio_info));
 
-			switch (pw_audio_format->info.dsd_audio_info.format)
+			switch (dsd_audio_format)
 			{
-				case GST_PIPEWIRE_DSD_FORMAT_DSD_U8: interleave = 1; break;
-				case GST_PIPEWIRE_DSD_FORMAT_DSD_U16LE: interleave = -2; break;
-				case GST_PIPEWIRE_DSD_FORMAT_DSD_U16BE: interleave = +2; break;
-				case GST_PIPEWIRE_DSD_FORMAT_DSD_U32LE: interleave = -4; break;
-				case GST_PIPEWIRE_DSD_FORMAT_DSD_U32BE: interleave = +4; break;
-				case GST_PIPEWIRE_DSD_FORMAT_DSD_UNKNOWN: interleave = 0; break;
+				case GST_DSD_FORMAT_U8: interleave = 1; break;
+				case GST_DSD_FORMAT_U16LE: interleave = -2; break;
+				case GST_DSD_FORMAT_U16BE: interleave = +2; break;
+				case GST_DSD_FORMAT_U32LE: interleave = -4; break;
+				case GST_DSD_FORMAT_U32BE: interleave = +4; break;
+				case GST_DSD_FORMAT_UNKNOWN: interleave = 0; break;
 				default:
-					GST_ERROR_OBJECT(parent, "unsupported DSD format \"%s\"", gst_pipewire_dsd_format_to_string(pw_audio_format->info.dsd_audio_info.format));
+					GST_ERROR_OBJECT(parent, "unsupported DSD format \"%s\"", gst_dsd_format_to_string(dsd_audio_format));
 					goto error;
 			}
 
@@ -1063,7 +895,7 @@ gboolean gst_pw_audio_format_to_spa_pod(
 					.bitorder = SPA_PARAM_BITORDER_msb,
 					.flags = 0,
 					.interleave = interleave,
-					.rate = pw_audio_format->info.dsd_audio_info.rate,
+					.rate = rate,
 					.channels = num_channels
 				};
 
@@ -1205,6 +1037,9 @@ gboolean gst_pw_audio_format_from_spa_pod_with_format_param(
 
 		case SPA_MEDIA_SUBTYPE_dsd:
 		{
+			GstDsdFormat dsd_audio_format;
+			GstAudioChannelPosition gst_channel_positions[SPA_AUDIO_MAX_CHANNELS];
+
 			if (spa_format_audio_dsd_parse(format_param_pod, &(info.info.dsd)) < 0)
 			{
 				GST_ERROR_OBJECT(parent, "could not parse DSD format: %s (%d)", wrapped_spa_strerror(err), -err);
@@ -1213,21 +1048,27 @@ gboolean gst_pw_audio_format_from_spa_pod_with_format_param(
 
 			switch (info.info.dsd.interleave)
 			{
-				case 1: pw_audio_format->info.dsd_audio_info.format = GST_PIPEWIRE_DSD_FORMAT_DSD_U8; break;
-				case -2: pw_audio_format->info.dsd_audio_info.format = GST_PIPEWIRE_DSD_FORMAT_DSD_U16LE; break;
-				case +2: pw_audio_format->info.dsd_audio_info.format = GST_PIPEWIRE_DSD_FORMAT_DSD_U16BE; break;
-				case -4: pw_audio_format->info.dsd_audio_info.format = GST_PIPEWIRE_DSD_FORMAT_DSD_U32LE; break;
-				case +4: pw_audio_format->info.dsd_audio_info.format = GST_PIPEWIRE_DSD_FORMAT_DSD_U32BE; break;
+				case 1: dsd_audio_format = GST_DSD_FORMAT_U8; break;
+				case -2: dsd_audio_format = GST_DSD_FORMAT_U16LE; break;
+				case +2: dsd_audio_format = GST_DSD_FORMAT_U16BE; break;
+				case -4: dsd_audio_format = GST_DSD_FORMAT_U32LE; break;
+				case +4: dsd_audio_format = GST_DSD_FORMAT_U32BE; break;
 				default:
 					GST_ERROR_OBJECT(parent, "unsupported SPA DSD interleave quantity %" G_GINT32_FORMAT, (gint32)(info.info.dsd.interleave));
 					goto error;
 			}
 
-			pw_audio_format->info.dsd_audio_info.rate = info.info.dsd.rate;
-			pw_audio_format->info.dsd_audio_info.channels = info.info.dsd.channels;
-			spa_to_gst_channel_positions(info.info.dsd.position, pw_audio_format->info.dsd_audio_info.positions, info.info.dsd.channels);
+			spa_to_gst_channel_positions(info.info.dsd.position, gst_channel_positions, info.info.dsd.channels);
 
 			pw_audio_format->audio_type = GST_PIPEWIRE_AUDIO_TYPE_DSD;
+
+			gst_dsd_info_set_format(
+				&(pw_audio_format->info.dsd_audio_info),
+				dsd_audio_format,
+				info.info.dsd.rate,
+				info.info.dsd.channels,
+				gst_channel_positions
+			);
 
 			break;
 		}
@@ -1468,7 +1309,7 @@ gsize gst_pw_audio_format_get_stride(GstPwAudioFormat const *pw_audio_format)
 			return GST_AUDIO_INFO_BPF(&(pw_audio_format->info.pcm_audio_info));
 
 		case GST_PIPEWIRE_AUDIO_TYPE_DSD:
-			return pw_audio_format->info.dsd_audio_info.channels * gst_pipewire_dsd_format_get_width(pw_audio_format->info.dsd_audio_info.format);
+			return GST_DSD_INFO_STRIDE(&(pw_audio_format->info.dsd_audio_info));
 
 		/* Stride has no real meaning in encoded audio. Just use 1 byte as stride. */
 		case GST_PIPEWIRE_AUDIO_TYPE_MP3:
@@ -1522,10 +1363,10 @@ gchar* gst_pw_audio_format_to_string(GstPwAudioFormat const *pw_audio_format)
 		{
 			return gst_info_strdup_printf(
 				"DSD: rate %d channels %d format %s width %d",
-				pw_audio_format->info.dsd_audio_info.rate,
-				pw_audio_format->info.dsd_audio_info.channels,
-				gst_pipewire_dsd_format_to_string(pw_audio_format->info.dsd_audio_info.format),
-				gst_pipewire_dsd_format_get_width(pw_audio_format->info.dsd_audio_info.format)
+				GST_DSD_INFO_RATE(&(pw_audio_format->info.dsd_audio_info)),
+				GST_DSD_INFO_CHANNELS(&(pw_audio_format->info.dsd_audio_info)),
+				gst_dsd_format_to_string(GST_DSD_INFO_FORMAT(&(pw_audio_format->info.dsd_audio_info))),
+				gst_dsd_format_get_width(GST_DSD_INFO_FORMAT(&(pw_audio_format->info.dsd_audio_info)))
 			);
 		}
 
@@ -1602,8 +1443,8 @@ gsize gst_pw_audio_format_calculate_num_frames_from_duration(GstPwAudioFormat co
 
 		case GST_PIPEWIRE_AUDIO_TYPE_DSD:
 		{
-			GstPipewireDsdInfo const *info = &(pw_audio_format->info.dsd_audio_info);
-			return gst_util_uint64_scale_int(duration, info->rate, GST_SECOND);
+			GstDsdInfo const *info = &(pw_audio_format->info.dsd_audio_info);
+			return gst_util_uint64_scale_int(duration, GST_DSD_INFO_RATE(info), GST_SECOND) / gst_dsd_format_get_width(GST_DSD_INFO_FORMAT(info));
 		}
 
 		case GST_PIPEWIRE_AUDIO_TYPE_MP3:
@@ -1649,8 +1490,8 @@ GstClockTime gst_pw_audio_format_calculate_duration_from_num_frames(GstPwAudioFo
 
 		case GST_PIPEWIRE_AUDIO_TYPE_DSD:
 		{
-			GstPipewireDsdInfo const *info = &(pw_audio_format->info.dsd_audio_info);
-			return gst_util_uint64_scale_int(num_frames, GST_SECOND, info->rate);
+			GstDsdInfo const *info = &(pw_audio_format->info.dsd_audio_info);
+			return gst_util_uint64_scale_int(num_frames * gst_dsd_format_get_width(GST_DSD_INFO_FORMAT(info)), GST_SECOND, GST_DSD_INFO_RATE(info));
 		}
 
 		case GST_PIPEWIRE_AUDIO_TYPE_MP3:

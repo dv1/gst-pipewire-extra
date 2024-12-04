@@ -151,7 +151,7 @@ struct _GstPwAudioSink
 	GstCaps *sink_caps;
 	GstPwAudioFormat pw_audio_format;
 	GstPwAudioFormatProbe *format_probe;
-	GstPipewireDsdFormat actual_dsd_format;
+	GstDsdFormat actual_dsd_format;
 	gsize stride;
 	guint dsd_data_rate_multiplier;
 	guint dsd_buffer_size_multiplier;
@@ -1435,18 +1435,18 @@ static gboolean gst_pw_audio_sink_set_caps(GstBaseSink *basesink, GstCaps *caps)
 	 * By setting the DSD format in the info as UNKNOWN, we essentially tell the
 	 * graph that we don't care about the format. Then, if there is a mismatch
 	 * between the input format and the graph format, we convert on the fly using
-	 * gst_pipewire_dsd_convert(). */
+	 * gst_dsd_convert(). */
 	{
-		GstPipewireDsdFormat original_dsd_format = self->pw_audio_format.info.dsd_audio_info.format;
+		GstDsdFormat original_dsd_format = GST_DSD_INFO_FORMAT(&(self->pw_audio_format.info.dsd_audio_info));
 
 		if (self->pw_audio_format.audio_type == GST_PIPEWIRE_AUDIO_TYPE_DSD)
-			self->pw_audio_format.info.dsd_audio_info.format = GST_PIPEWIRE_DSD_FORMAT_DSD_UNKNOWN;
+			self->pw_audio_format.info.dsd_audio_info.format = GST_DSD_FORMAT_UNKNOWN;
 
 		if (!gst_pw_audio_format_to_spa_pod(&(self->pw_audio_format), GST_OBJECT_CAST(self), builder_buffer, sizeof(builder_buffer), params))
 			goto error;
 
 		if (self->pw_audio_format.audio_type == GST_PIPEWIRE_AUDIO_TYPE_DSD)
-			self->pw_audio_format.info.dsd_audio_info.format = original_dsd_format;
+			GST_DSD_INFO_FORMAT(&(self->pw_audio_format.info.dsd_audio_info)) = original_dsd_format;
 	}
 
 	self->stride = gst_pw_audio_format_get_stride(&(self->pw_audio_format));
@@ -1518,7 +1518,7 @@ static gboolean gst_pw_audio_sink_set_caps(GstBaseSink *basesink, GstCaps *caps)
 						rate = GST_AUDIO_INFO_RATE(&(self->pw_audio_format.info.pcm_audio_info));
 					break;
 				case GST_PIPEWIRE_AUDIO_TYPE_DSD:
-					rate = self->pw_audio_format.info.dsd_audio_info.rate;
+					rate = GST_DSD_INFO_RATE(&(self->pw_audio_format.info.dsd_audio_info));
 					break;
 				default:
 					break;
@@ -1717,18 +1717,18 @@ static GstCaps* gst_pw_audio_sink_get_caps(GstBaseSink *basesink, GstCaps *filte
 							g_value_init(&string_value, G_TYPE_STRING);
 
 							/* First add the probed format. */
-							g_value_set_static_string(&string_value, gst_pipewire_dsd_format_to_string(probed_details->info.dsd_audio_info.format));
+							g_value_set_static_string(&string_value, gst_dsd_format_to_string(GST_DSD_INFO_FORMAT(&(probed_details->info.dsd_audio_info))));
 							gst_value_list_append_value(&list_value, &string_value);
 
 							/* Now add the rest. */
-							for (format_idx = GST_PIPEWIRE_DSD_FIRST_VALID_FORMAT; format_idx < GST_NUM_PIPEWIRE_DSD_FORMATS; ++format_idx)
+							for (format_idx = GST_DSD_FORMAT_U8; format_idx < GST_NUM_DSD_FORMATS; ++format_idx)
 							{
-								GstPipewireDsdFormat dsd_format = (GstPipewireDsdFormat)format_idx;
+								GstDsdFormat dsd_format = (GstDsdFormat)format_idx;
 
-								if (dsd_format == probed_details->info.dsd_audio_info.format)
+								if (dsd_format == GST_DSD_INFO_FORMAT(&(probed_details->info.dsd_audio_info)))
 									continue;
 
-								g_value_set_static_string(&string_value, gst_pipewire_dsd_format_to_string(dsd_format));
+								g_value_set_static_string(&string_value, gst_dsd_format_to_string(dsd_format));
 								gst_value_list_append_value(&list_value, &string_value);
 							}
 
@@ -2921,7 +2921,7 @@ static void gst_pw_audio_sink_setup_audio_data_buffer(GstPwAudioSink *self)
 			self->dsd_conversion_buffer_size = gst_pw_audio_format_calculate_num_frames_from_duration(
 				&(self->pw_audio_format),
 				GST_SECOND * 1
-			) * self->pw_audio_format.info.dsd_audio_info.channels * 4; /* "*4" for the DSDU32 format */
+			) * GST_DSD_INFO_CHANNELS(&(self->pw_audio_format.info.dsd_audio_info)) * 4; /* "*4" for the DSDU32 format */
 
 			GST_DEBUG_OBJECT(
 				self,
@@ -3315,11 +3315,11 @@ static void gst_pw_audio_sink_param_changed(void *data, uint32_t id, const struc
 	 * explanation why dsd_buffer_size_multiplier is needed. */
 	if (changed_pw_audio_format.audio_type == GST_PIPEWIRE_AUDIO_TYPE_DSD)
 	{
-		GstPipewireDsdFormat input_dsd_format = self->pw_audio_format.info.dsd_audio_info.format;
-		GstPipewireDsdFormat graph_dsd_format = changed_pw_audio_format.info.dsd_audio_info.format;
+		GstDsdFormat input_dsd_format = GST_DSD_INFO_FORMAT(&(self->pw_audio_format.info.dsd_audio_info));
+		GstDsdFormat graph_dsd_format = GST_DSD_INFO_FORMAT(&(changed_pw_audio_format.info.dsd_audio_info));
 
-		guint input_dsd_format_width = gst_pipewire_dsd_format_get_width(input_dsd_format);
-		guint graph_dsd_format_width = gst_pipewire_dsd_format_get_width(graph_dsd_format);
+		guint input_dsd_format_width = gst_dsd_format_get_width(input_dsd_format);
+		guint graph_dsd_format_width = gst_dsd_format_get_width(graph_dsd_format);
 
 		self->actual_dsd_format = graph_dsd_format;
 
@@ -3327,7 +3327,7 @@ static void gst_pw_audio_sink_param_changed(void *data, uint32_t id, const struc
 		 * of data that needs to be produced in the process callback depends on
 		 * dsd_buffer_size_multiplier *and* on the DSD rate. Any rate higher than
 		 * DSD64 needs an integer multiple of the indicated quantum size. */
-		self->dsd_data_rate_multiplier = self->pw_audio_format.info.dsd_audio_info.rate / GST_PIPEWIRE_DSD_DSD64_BYTE_RATE;
+		self->dsd_data_rate_multiplier = self->pw_audio_format.info.dsd_audio_info.rate / GST_DSD_MAKE_DSD_RATE_44x(64);
 
 		if (graph_dsd_format_width > input_dsd_format_width)
 			self->dsd_buffer_size_multiplier = graph_dsd_format_width / input_dsd_format_width;
@@ -3337,7 +3337,7 @@ static void gst_pw_audio_sink_param_changed(void *data, uint32_t id, const struc
 		GST_DEBUG_OBJECT(
 			self,
 			"additional DSD information:  input/graph DSD format: %s/%s  input/graph DSD format width: %u/%u  buffer size multiplier: %u  data rate multiplier: %u",
-			gst_pipewire_dsd_format_to_string(input_dsd_format), gst_pipewire_dsd_format_to_string(graph_dsd_format),
+			gst_dsd_format_to_string(input_dsd_format), gst_dsd_format_to_string(graph_dsd_format),
 			input_dsd_format_width, graph_dsd_format_width,
 			self->dsd_buffer_size_multiplier,
 			self->dsd_data_rate_multiplier
@@ -3681,11 +3681,11 @@ static void gst_pw_audio_sink_raw_on_process_stream(void *data)
 				}
 
 				if ((self->pw_audio_format.audio_type == GST_PIPEWIRE_AUDIO_TYPE_DSD)
-				 && (self->pw_audio_format.info.dsd_audio_info.format != self->actual_dsd_format))
+				 && (GST_DSD_INFO_FORMAT(&(self->pw_audio_format.info.dsd_audio_info)) != self->actual_dsd_format))
 				{
 					/* If we reach this point, it means we have incoming DSD data
 					 * that can't directly be passed to the graph, because the latter
-					 * uses a different grouping format. We have to converr the data
+					 * uses a different grouping format. We have to convert the data
 					 * first. Retrieve incoming DSD frames from the ring buffer and
 					 * store them in the intermediate "DSD conversion buffer". Then,
 					 * use that buffer as the source and the SPA data chunk as the
@@ -3698,10 +3698,9 @@ static void gst_pw_audio_sink_raw_on_process_stream(void *data)
 					 * that's what is passed around until the very end, when the
 					 * actual conversion takes place. */
 
-					GstPipewireDsdFormat input_dsd_format = self->pw_audio_format.info.dsd_audio_info.format;
-					GstPipewireDsdFormat graph_dsd_format = self->actual_dsd_format;
-					guint input_dsd_format_width = gst_pipewire_dsd_format_get_width(input_dsd_format);
-					guint input_dsd_format_stride = input_dsd_format_width * self->pw_audio_format.info.dsd_audio_info.channels;
+					GstDsdFormat input_dsd_format = GST_DSD_INFO_FORMAT(&(self->pw_audio_format.info.dsd_audio_info));
+					GstDsdFormat graph_dsd_format = self->actual_dsd_format;
+					guint input_dsd_format_stride = GST_DSD_INFO_STRIDE(&(self->pw_audio_format.info.dsd_audio_info));
 
 					/* To avoid buffer overflows, check how many input DSD frames can
 					 * fit in the DSD conversion buffer. */
@@ -3743,13 +3742,18 @@ static void gst_pw_audio_sink_raw_on_process_stream(void *data)
 							&buffered_frames_to_retrieval_pts_delta
 						);
 
-						gst_pipewire_dsd_convert(
+						gst_dsd_convert(
 							self->dsd_conversion_buffer,
 							dest_ptr,
 							input_dsd_format,
 							graph_dsd_format,
+							GST_AUDIO_LAYOUT_INTERLEAVED,
+							GST_AUDIO_LAYOUT_INTERLEAVED,
+							NULL,
+							NULL,
 							num_conv_output_bytes,
-							self->pw_audio_format.info.dsd_audio_info.channels
+							GST_DSD_INFO_CHANNELS(&(self->pw_audio_format.info.dsd_audio_info)),
+							FALSE
 						);
 
 						dest_ptr += num_conv_output_bytes;
