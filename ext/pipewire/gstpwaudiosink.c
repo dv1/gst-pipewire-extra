@@ -153,8 +153,10 @@ struct _GstPwAudioSink
 	GstPwAudioFormatProbe *format_probe;
 	GstDsdInfo actual_dsd_info;
 	gsize stride;
-	guint dsd_data_rate_multiplier;
-	guint dsd_buffer_size_multiplier;
+	gint dsd_data_rate_multiplier_num;
+	gint dsd_data_rate_multiplier_denom;
+	/* This keeps track of remainders during DSD frame count computation. */
+	gint64 dsd_min_num_required_ticks_remainder;
 	GMutex probe_process_mutex;
 	GstCaps *cached_probed_caps;
 
@@ -395,6 +397,7 @@ static void gst_pw_audio_sink_drain_stream_unlocked(GstPwAudioSink *self);
 static void gst_pw_audio_sink_drain_stream_and_audio_data_buffer(GstPwAudioSink *self);
 static void gst_pw_audio_sink_disconnect_stream(GstPwAudioSink *self);
 static void gst_pw_audio_sink_notify_about_activated_stream(GstPwAudioSink *self);
+static void gst_pw_audio_sink_calculate_data_rate_multiplier(GstPwAudioSink *self);
 
 /* This callback is for use with pw_loop_invoke(). */
 static int gst_pw_audio_sink_activated_stream_cb(struct spa_loop *loop, bool async, uint32_t seq, const void *_data, size_t size, void *user_data);
@@ -734,6 +737,7 @@ static void gst_pw_audio_sink_init(GstPwAudioSink *self)
 	self->sink_caps = NULL;
 	memset(&(self->pw_audio_format), 0, sizeof(self->pw_audio_format));
 	self->format_probe = NULL;
+	self->dsd_min_num_required_ticks_remainder = 0;
 	g_mutex_init(&(self->probe_process_mutex));
 	self->cached_probed_caps = NULL;
 
@@ -2974,6 +2978,9 @@ static void gst_pw_audio_sink_reset_audio_data_buffer_unlocked(GstPwAudioSink *s
 	 * and there's no more old data to check for alignment with new data. */
 	self->synced_playback_started = FALSE;
 	self->expected_next_running_time_pts = GST_CLOCK_TIME_NONE;
+
+	/* Reset this, since any remainders are gone now. */
+	self->dsd_min_num_required_ticks_remainder = 0;
 }
 
 
@@ -3206,6 +3213,47 @@ static void gst_pw_audio_sink_notify_about_activated_stream(GstPwAudioSink *self
 }
 
 
+static void gst_pw_audio_sink_calculate_data_rate_multiplier(GstPwAudioSink *self)
+{
+	/* The dsd_data_rate_multiplier fractional value is the ratio between
+	 * number of required DSD bytes and number of PipeWire graph ticks.
+	 * In other words, it specifies how many DSD bytes are needed for each
+	 * PipeWire graph tick.
+	 * GST_DSD_INFO_RATE(&(self->actual_dsd_info)) is the DSD rate, which
+	 * already is given in bytes per second. The clock rate specifies
+	 * the time one tick specifies per second. (One example of a common
+	 * clock rate is 1/48000.) From this the following calculation follows:
+	 *
+	 * num_bytes_per_tick = GST_DSD_INFO_RATE(&(self->actual_dsd_info)) * clock.rate.num / clock.rate.denom
+	 *
+	 * Since this division may not result in an integer value, the value
+	 * is stored as a fractional. It is called dsd_data_rate_multiplier
+	 * because the minimum required number of ticks during data processing
+	 * is multiplied by this fractional to get the number of required bytes.
+	 */
+
+	gint data_rate_gcd;
+
+	if (self->spa_position->clock.rate.denom <= 0)
+		return;
+
+	self->dsd_data_rate_multiplier_num = GST_DSD_INFO_RATE(&(self->actual_dsd_info)) * self->spa_position->clock.rate.num;
+	self->dsd_data_rate_multiplier_denom = self->spa_position->clock.rate.denom;
+	data_rate_gcd = gst_util_greatest_common_divisor(self->dsd_data_rate_multiplier_num, self->dsd_data_rate_multiplier_denom);
+	GST_DEBUG_OBJECT(
+		self,
+		"calculating data rate multiplier:  original multiplier: %d/%d  GCD: %d",
+		self->dsd_data_rate_multiplier_num, self->dsd_data_rate_multiplier_denom,
+		data_rate_gcd
+	);
+
+	/* Simplify the fractional by dividing by the GCD. This reduces the magnitude
+	 * of the numerator and denominator, which is helpful for avoiding overflows. */
+	self->dsd_data_rate_multiplier_num /= data_rate_gcd;
+	self->dsd_data_rate_multiplier_denom /= data_rate_gcd;
+}
+
+
 static int gst_pw_audio_sink_activated_stream_cb(
 	G_GNUC_UNUSED struct spa_loop *loop,
 	G_GNUC_UNUSED bool async,
@@ -3311,8 +3359,6 @@ static void gst_pw_audio_sink_param_changed(void *data, uint32_t id, const struc
 		g_free(format_str);
 	}
 
-	/* See the gst_pw_audio_format_get_stride() documentation for an
-	 * explanation why dsd_buffer_size_multiplier is needed. */
 	if (changed_pw_audio_format.audio_type == GST_PIPEWIRE_AUDIO_TYPE_DSD)
 	{
 		GstDsdFormat input_dsd_format = GST_DSD_INFO_FORMAT(&(self->pw_audio_format.info.dsd_audio_info));
@@ -3323,24 +3369,14 @@ static void gst_pw_audio_sink_param_changed(void *data, uint32_t id, const struc
 
 		memcpy(&(self->actual_dsd_info), &(changed_pw_audio_format.info.dsd_audio_info), sizeof(self->actual_dsd_info));
 
-		/* dsd_data_rate_multiplier is needed because the minimum necessary amount
-		 * of data that needs to be produced in the process callback depends on
-		 * dsd_buffer_size_multiplier *and* on the DSD rate. Any rate higher than
-		 * DSD64 needs an integer multiple of the indicated quantum size. */
-		self->dsd_data_rate_multiplier = self->pw_audio_format.info.dsd_audio_info.rate / GST_DSD_MAKE_DSD_RATE_44x(64);
-
-		if (graph_dsd_format_width > input_dsd_format_width)
-			self->dsd_buffer_size_multiplier = graph_dsd_format_width / input_dsd_format_width;
-		else
-			self->dsd_buffer_size_multiplier = 1;
+		gst_pw_audio_sink_calculate_data_rate_multiplier(self);
 
 		GST_DEBUG_OBJECT(
 			self,
-			"additional DSD information:  input/graph DSD format: %s/%s  input/graph DSD format width: %u/%u  buffer size multiplier: %u  data rate multiplier: %u",
+			"additional DSD information:  input/graph DSD format: %s/%s  input/graph DSD format width: %u/%u  data rate multiplier: %d/%d",
 			gst_dsd_format_to_string(input_dsd_format), gst_dsd_format_to_string(graph_dsd_format),
 			input_dsd_format_width, graph_dsd_format_width,
-			self->dsd_buffer_size_multiplier,
-			self->dsd_data_rate_multiplier
+			self->dsd_data_rate_multiplier_num, self->dsd_data_rate_multiplier_denom
 		);
 	}
 }
@@ -3367,17 +3403,21 @@ static void gst_pw_audio_sink_io_changed(void *data, uint32_t id, void *area, G_
 					self->spa_position->clock.rate.denom
 				);
 
+				/* Since the clock rate might have changed, recalculate the data rate multiplier. */
+				gst_pw_audio_sink_calculate_data_rate_multiplier(self);
+
 				GST_DEBUG_OBJECT(
 					self,
 					"got new SPA IO position:  offset: %" G_GINT64_FORMAT "  state: %s  num segments: %" G_GUINT32_FORMAT "  "
 					"quantum size in ticks: %" G_GUINT64_FORMAT "  rate: %" G_GUINT32_FORMAT "/%" G_GUINT32_FORMAT " "
-					" => quantum size in ns: %" GST_TIME_FORMAT,
+					" => quantum size in ns: %" GST_TIME_FORMAT "  data rate multiplier: %d/%d",
 					(gint64)(self->spa_position->offset),
 					spa_io_position_state_to_string((enum spa_io_position_state)(self->spa_position->state)),
 					(guint32)(self->spa_position->n_segments),
 					self->quantum_size_in_ticks,
 					self->spa_position->clock.rate.num, self->spa_position->clock.rate.denom,
-					GST_TIME_ARGS(self->quantum_size_in_ns)
+					GST_TIME_ARGS(self->quantum_size_in_ns),
+					self->dsd_data_rate_multiplier_num, self->dsd_data_rate_multiplier_denom
 				);
 			}
 			else
@@ -3601,16 +3641,43 @@ static void gst_pw_audio_sink_raw_on_process_stream(void *data)
 			break;
 
 		case GST_PIPEWIRE_AUDIO_TYPE_DSD:
-			// TODO: It is currently unclear why the *2 multiplication is necessary.
-			// It is known that commit c48a4bc166bfb5827ecea1195a8435458a3d8501 in
-			// pipewire-git ("pw-cat: fix DSF playback again") applies frame scaling,
-			// so perhaps something related needs to be done here. Alternatively,
-			// the "2" may be related to the number of channels.
-			num_frames_to_produce = min_num_required_ticks
-			                      * self->dsd_data_rate_multiplier
-			                      * self->dsd_buffer_size_multiplier
-			                      * 2;
+		{
+			/* Calculating num_frames_to_produce is non-trivial with DSD, for the following reasons:
+			 *
+			 * 1. For each tick, a certain number of DSD bytes is expected. This number is a fractional,
+			 *    and stored as self->dsd_data_rate_multiplier_num and self->dsd_data_rate_multiplier_denom.
+			 * 2. DSD bytes are not necessary stored directly as bytes here. For example, the graph might
+			 *    expect the bytes to be organized in groups of 4 if the underlying audio hardware outputs
+			 *    data through alsa with the DSDU32BE format.
+			 *
+			 * These two cause num_frames_to_produce amounts to be non-integer. The computation overall is:
+			 *
+			 * num_frames_to_produce = min_num_required_ticks * dsd_data_rate_multiplier_num / (dsd_data_rate_multiplier_denom * dsd_format_width)
+			 *
+			 * The dsd_format_width value in the denominator factors in the aforementioned grouping.
+			 *
+			 * Simply rounding that result down or up to get an integer value results in synchronized
+			 * playback issues. Instead, keep track of the non-integer portion. Once it accumulates
+			 * enough to amount to at least 1 frame, factor this into the calculation to let the
+			 * num_frames_to_produce be higher be increased. That way, the overall consumption rate
+			 * is correct. */
+
+			gint dsd_format_width = gst_dsd_format_get_width(GST_DSD_INFO_FORMAT(&(self->pw_audio_format.info.dsd_audio_info)));
+			gint64 min_num_required_ticks_num = min_num_required_ticks * self->dsd_data_rate_multiplier_num;
+			gint64 min_num_required_ticks_denom = self->dsd_data_rate_multiplier_denom * dsd_format_width;
+
+			self->dsd_min_num_required_ticks_remainder += min_num_required_ticks_num % min_num_required_ticks_denom;
+
+			if (self->dsd_min_num_required_ticks_remainder >= min_num_required_ticks_denom)
+			{
+				min_num_required_ticks_num += min_num_required_ticks_denom;
+				self->dsd_min_num_required_ticks_remainder -= min_num_required_ticks_denom;
+			}
+
+			num_frames_to_produce = min_num_required_ticks_num / min_num_required_ticks_denom;
+
 			break;
+		}
 
 		default:
 			g_assert_not_reached();
