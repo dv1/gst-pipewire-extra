@@ -151,7 +151,7 @@ struct _GstPwAudioSink
 	GstCaps *sink_caps;
 	GstPwAudioFormat pw_audio_format;
 	GstPwAudioFormatProbe *format_probe;
-	GstDsdFormat actual_dsd_format;
+	GstDsdInfo actual_dsd_info;
 	gsize stride;
 	guint dsd_data_rate_multiplier;
 	guint dsd_buffer_size_multiplier;
@@ -3321,7 +3321,7 @@ static void gst_pw_audio_sink_param_changed(void *data, uint32_t id, const struc
 		guint input_dsd_format_width = gst_dsd_format_get_width(input_dsd_format);
 		guint graph_dsd_format_width = gst_dsd_format_get_width(graph_dsd_format);
 
-		self->actual_dsd_format = graph_dsd_format;
+		memcpy(&(self->actual_dsd_info), &(changed_pw_audio_format.info.dsd_audio_info), sizeof(self->actual_dsd_info));
 
 		/* dsd_data_rate_multiplier is needed because the minimum necessary amount
 		 * of data that needs to be produced in the process callback depends on
@@ -3681,7 +3681,7 @@ static void gst_pw_audio_sink_raw_on_process_stream(void *data)
 				}
 
 				if ((self->pw_audio_format.audio_type == GST_PIPEWIRE_AUDIO_TYPE_DSD)
-				 && (GST_DSD_INFO_FORMAT(&(self->pw_audio_format.info.dsd_audio_info)) != self->actual_dsd_format))
+				 && (GST_DSD_INFO_FORMAT(&(self->pw_audio_format.info.dsd_audio_info)) != GST_DSD_INFO_FORMAT(&(self->actual_dsd_info))))
 				{
 					/* If we reach this point, it means we have incoming DSD data
 					 * that can't directly be passed to the graph, because the latter
@@ -3699,7 +3699,7 @@ static void gst_pw_audio_sink_raw_on_process_stream(void *data)
 					 * actual conversion takes place. */
 
 					GstDsdFormat input_dsd_format = GST_DSD_INFO_FORMAT(&(self->pw_audio_format.info.dsd_audio_info));
-					GstDsdFormat graph_dsd_format = self->actual_dsd_format;
+					GstDsdFormat graph_dsd_format = GST_DSD_INFO_FORMAT(&(self->actual_dsd_info));
 					guint input_dsd_format_stride = GST_DSD_INFO_STRIDE(&(self->pw_audio_format.info.dsd_audio_info));
 
 					/* To avoid buffer overflows, check how many input DSD frames can
