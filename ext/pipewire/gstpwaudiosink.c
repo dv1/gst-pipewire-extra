@@ -3644,6 +3644,11 @@ static void gst_pw_audio_sink_raw_on_process_stream(void *data)
 				GstClockTimeDiff buffered_frames_to_retrieval_pts_delta;
 				gboolean early_exit = FALSE;
 
+				/* This variable exists because in case of a conversion, the stride
+				 * of the actual output may differ from that of the original data
+				 * (since that data was converted). */
+				gsize output_stride = self->stride;
+
 				GstClockTimeDiff effective_skew_threshold = self->synced_playback_started ? self->skew_threshold_snapshot : 0;
 
 				if (self->do_synced_playback)
@@ -3762,6 +3767,11 @@ static void gst_pw_audio_sink_raw_on_process_stream(void *data)
 
 						dest_ptr += num_conv_output_bytes;
 						num_produced_frames += num_frames_to_convert;
+
+						/* Since the converted data is to be sent out instead of the
+						 * original one, overwrite the original data's stride with
+						 * that of the converted data. */
+						output_stride = GST_DSD_INFO_CHANNELS(&(self->actual_dsd_info)) * gst_dsd_format_get_width(GST_DSD_INFO_FORMAT(&(self->actual_dsd_info)));
 					}
 				}
 				else
@@ -3783,8 +3793,8 @@ static void gst_pw_audio_sink_raw_on_process_stream(void *data)
 				}
 
 				inner_spa_data->chunk->offset = 0;
-				inner_spa_data->chunk->size = num_frames_to_produce * self->stride;
-				inner_spa_data->chunk->stride = self->stride;
+				inner_spa_data->chunk->size = num_frames_to_produce * output_stride;
+				inner_spa_data->chunk->stride = output_stride;
 
 				switch (retrieval_result)
 				{
