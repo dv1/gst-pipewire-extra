@@ -166,11 +166,11 @@ static GstPipewireAudioTypeDetails const audio_type_details[GST_NUM_PIPEWIRE_AUD
 	{
 		.name = "DSD",
 		.template_caps_string = \
-			GST_DSD_MEDIA_TYPE ", "                      \
-			"format = (string) " GST_PW_DSD_FORMATS ", " \
-			"rate = " GST_AUDIO_RATE_RANGE ", "          \
-			"layout = (string) { interleaved }, "        \
-			"reversed-bytes = (gboolean) { false }, "    \
+			GST_DSD_MEDIA_TYPE ", "                         \
+			"format = (string) " GST_PW_DSD_FORMATS ", "    \
+			"rate = " GST_AUDIO_RATE_RANGE ", "             \
+			"layout = (string) { interleaved }, "           \
+			"reversed-bytes = (gboolean) { false, true }, " \
 			"channels = " GST_AUDIO_CHANNELS_RANGE,
 		/* DSD data can be subdivided, and the ring buffer can
 		 * be used with such data, so mark this as true. However,
@@ -892,7 +892,7 @@ gboolean gst_pw_audio_format_to_spa_pod(
 
 			{
 				struct spa_audio_info_dsd dsd_info = {
-					.bitorder = SPA_PARAM_BITORDER_msb,
+					.bitorder = SPA_PARAM_BITORDER_unknown,
 					.flags = 0,
 					.interleave = interleave,
 					.rate = rate,
@@ -1069,6 +1069,8 @@ gboolean gst_pw_audio_format_from_spa_pod_with_format_param(
 				info.info.dsd.channels,
 				gst_channel_positions
 			);
+
+			GST_DSD_INFO_REVERSED_BYTES(&(pw_audio_format->info.dsd_audio_info)) = (info.info.dsd.bitorder == SPA_PARAM_BITORDER_lsb);
 
 			break;
 		}

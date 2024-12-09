@@ -3681,7 +3681,11 @@ static void gst_pw_audio_sink_raw_on_process_stream(void *data)
 				}
 
 				if ((self->pw_audio_format.audio_type == GST_PIPEWIRE_AUDIO_TYPE_DSD)
-				 && (GST_DSD_INFO_FORMAT(&(self->pw_audio_format.info.dsd_audio_info)) != GST_DSD_INFO_FORMAT(&(self->actual_dsd_info))))
+					&& (
+						(GST_DSD_INFO_FORMAT(&(self->pw_audio_format.info.dsd_audio_info)) != GST_DSD_INFO_FORMAT(&(self->actual_dsd_info)))
+						|| (GST_DSD_INFO_REVERSED_BYTES(&(self->pw_audio_format.info.dsd_audio_info)) != GST_DSD_INFO_REVERSED_BYTES(&(self->actual_dsd_info)))
+					)
+				)
 				{
 					/* If we reach this point, it means we have incoming DSD data
 					 * that can't directly be passed to the graph, because the latter
@@ -3753,7 +3757,7 @@ static void gst_pw_audio_sink_raw_on_process_stream(void *data)
 							NULL,
 							num_conv_output_bytes,
 							GST_DSD_INFO_CHANNELS(&(self->pw_audio_format.info.dsd_audio_info)),
-							FALSE
+							GST_DSD_INFO_REVERSED_BYTES(&(self->pw_audio_format.info.dsd_audio_info)) != GST_DSD_INFO_REVERSED_BYTES(&(self->actual_dsd_info))
 						);
 
 						dest_ptr += num_conv_output_bytes;
