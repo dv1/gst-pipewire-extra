@@ -3716,6 +3716,12 @@ static void gst_pw_audio_sink_raw_on_process_stream(void *data)
 				 * (since that data was converted). */
 				gsize output_stride = self->stride;
 
+				/* How many bytes the output that goes to the SPA chunk must contain.
+				 * Note that even in the DSD conversion case (= the gst_dsd_convert()
+				 * call below), this stays the same, since gst_dsd_convert() changes
+				 * the layout of the DSD data - it does not add or remove bytes. */
+				guint num_output_bytes = num_frames_to_produce * self->stride;
+
 				GstClockTimeDiff effective_skew_threshold = self->synced_playback_started ? self->skew_threshold_snapshot : 0;
 
 				if (self->do_synced_playback)
@@ -3860,7 +3866,7 @@ static void gst_pw_audio_sink_raw_on_process_stream(void *data)
 				}
 
 				inner_spa_data->chunk->offset = 0;
-				inner_spa_data->chunk->size = num_frames_to_produce * output_stride;
+				inner_spa_data->chunk->size = num_output_bytes;
 				inner_spa_data->chunk->stride = output_stride;
 
 				switch (retrieval_result)
