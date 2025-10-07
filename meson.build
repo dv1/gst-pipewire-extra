@@ -5,6 +5,7 @@ gstreamer_base_dep  = dependency('gstreamer-base-1.0',  version : '>=1.24.0', re
 gstreamer_check_dep = dependency('gstreamer-check-1.0', version : '>=1.24.0', required : true)
 gstreamer_audio_dep = dependency('gstreamer-audio-1.0', version : '>=1.24.0', required : false)
 
+libspa_dep = dependency('libspa-0.2', required : true, version : '>=0.2')
 libpipewire_dep = dependency('libpipewire-0.3', required : true, version : '>=1.0.0')
 
 plugins_install_dir = join_paths(get_option('libdir'), 'gstreamer-1.0')
@@ -34,7 +35,7 @@ gstpipewireextra_plugin = library(
 	install : true,
 	install_dir: plugins_install_dir,
 	include_directories: [configinc],
-	dependencies : [gstreamer_dep, gstreamer_base_dep, gstreamer_audio_dep, libpipewire_dep]
+	dependencies : [gstreamer_dep, gstreamer_base_dep, gstreamer_audio_dep, libspa_dep, libpipewire_dep]
 )
 
 
@@ -43,7 +44,7 @@ test_check_stream_clock = executable(
 	['test/check_stream_clock.c'],
 	link_with: [gstpipewireextra_plugin],
 	include_directories: [configinc, 'ext/pipewire'],
-	dependencies : [gstreamer_dep, gstreamer_base_dep, gstreamer_audio_dep, gstreamer_check_dep, libpipewire_dep]
+	dependencies : [gstreamer_dep, gstreamer_base_dep, gstreamer_audio_dep, gstreamer_check_dep, libspa_dep, libpipewire_dep]
 )
 test('check_stream_clock', test_check_stream_clock)
 
@@ -52,7 +53,7 @@ test_check_utils = executable(
 	['test/check_utils.c'],
 	link_with: [gstpipewireextra_plugin],
 	include_directories: [configinc, 'ext/pipewire'],
-	dependencies : [gstreamer_dep, gstreamer_base_dep, gstreamer_audio_dep, gstreamer_check_dep, libpipewire_dep]
+	dependencies : [gstreamer_dep, gstreamer_base_dep, gstreamer_audio_dep, gstreamer_check_dep, libspa_dep, libpipewire_dep]
 )
 test('check_utils', test_check_utils)
 
@@ -61,7 +62,7 @@ test_check_pwaudioringbuffer = executable(
 	['test/check_pwaudioringbuffer.c'],
 	link_with: [gstpipewireextra_plugin],
 	include_directories: [configinc, 'ext/pipewire'],
-	dependencies : [gstreamer_dep, gstreamer_base_dep, gstreamer_audio_dep, gstreamer_check_dep, libpipewire_dep]
+	dependencies : [gstreamer_dep, gstreamer_base_dep, gstreamer_audio_dep, gstreamer_check_dep, libspa_dep, libpipewire_dep]
 )
 test('check_pwaudioringbuffer', test_check_pwaudioringbuffer)
 
