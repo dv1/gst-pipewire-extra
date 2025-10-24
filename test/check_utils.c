@@ -55,7 +55,7 @@ GST_START_TEST(basic_read_operations)
 	assert_equals_uint64(read_lengths[1], 0);
 	assert_equals_uint64(result, 0);
 }
-GST_END_TEST;
+GST_END_TEST
 
 
 GST_START_TEST(wrap_around_read)
@@ -79,7 +79,7 @@ GST_START_TEST(wrap_around_read)
 	assert_equals_uint64(read_lengths[1], 100);
 	assert_equals_uint64(result, 300);
 }
-GST_END_TEST;
+GST_END_TEST
 
 
 GST_START_TEST(read_to_end_then_wrap_around)
@@ -112,7 +112,7 @@ GST_START_TEST(read_to_end_then_wrap_around)
 	assert_equals_uint64(read_lengths[1], 0);
 	assert_equals_uint64(result, 30);
 }
-GST_END_TEST;
+GST_END_TEST
 
 
 GST_START_TEST(basic_write_operations)
@@ -164,7 +164,7 @@ GST_START_TEST(basic_write_operations)
 	assert_equals_uint64(write_lengths[1], 0);
 	assert_equals_uint64(result, 0);
 }
-GST_END_TEST;
+GST_END_TEST
 
 
 GST_START_TEST(wrap_around_write)
@@ -188,7 +188,7 @@ GST_START_TEST(wrap_around_write)
 	assert_equals_uint64(write_lengths[1], 100);
 	assert_equals_uint64(result, 300);
 }
-GST_END_TEST;
+GST_END_TEST
 
 
 GST_START_TEST(combined_wrapped_read_and_write)
@@ -230,7 +230,7 @@ GST_START_TEST(combined_wrapped_read_and_write)
 	assert_equals_uint64(readwrite_lengths[1], 0);
 	assert_equals_uint64(result, 150);
 }
-GST_END_TEST;
+GST_END_TEST
 
 
 static Suite * gst_pw_utils_suite(void)
@@ -250,4 +250,4 @@ static Suite * gst_pw_utils_suite(void)
 }
 
 
-GST_CHECK_MAIN(gst_pw_utils);
+GST_CHECK_MAIN(gst_pw_utils)

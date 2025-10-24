@@ -87,7 +87,7 @@
 
 /* Wrapper around spa_strerror() to avoid "ISO C forbids braced-groups within expressions"
  * warnings in the code below */
-static inline char* wrapped_spa_strerror(int err)
+static inline char const * wrapped_spa_strerror(int err)
 {
 	return spa_strerror(err);
 }
