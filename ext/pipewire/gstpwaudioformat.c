@@ -1346,7 +1346,13 @@ gsize gst_pw_audio_format_get_stride(GstPwAudioFormat const *pw_audio_format)
  */
 gchar* gst_pw_audio_format_to_string(GstPwAudioFormat const *pw_audio_format)
 {
+	GstPipewireAudioTypeDetails const *details;
+
 	g_assert(pw_audio_format != NULL);
+	g_assert(pw_audio_format->audio_type < GST_NUM_PIPEWIRE_AUDIO_TYPES);
+
+	details = &audio_type_details[pw_audio_format->audio_type];
+	g_assert(details != NULL);
 
 	switch (pw_audio_format->audio_type)
 	{
@@ -1372,21 +1378,22 @@ gchar* gst_pw_audio_format_to_string(GstPwAudioFormat const *pw_audio_format)
 			);
 		}
 
-#define DEFAULT_ENCODED_FORMAT_CASE(TYPE_NAME, STR) \
+#define DEFAULT_ENCODED_FORMAT_CASE(TYPE_NAME) \
 		case GST_PIPEWIRE_AUDIO_TYPE_##TYPE_NAME: \
 		{ \
 			return gst_info_strdup_printf( \
-				STR ": rate %d channels %d", \
+				"%s: rate %d channels %d", \
+				details->name, \
 				pw_audio_format->info.encoded_audio_info.rate, \
 				pw_audio_format->info.encoded_audio_info.channels \
 			); \
 		}
 
-		DEFAULT_ENCODED_FORMAT_CASE(MP3, "MP3")
-		DEFAULT_ENCODED_FORMAT_CASE(VORBIS, "Vorbis")
-		DEFAULT_ENCODED_FORMAT_CASE(FLAC, "FLAC")
-		DEFAULT_ENCODED_FORMAT_CASE(ALAC, "ALAC")
-		DEFAULT_ENCODED_FORMAT_CASE(REAL_AUDIO, "Real Audio")
+		DEFAULT_ENCODED_FORMAT_CASE(MP3)
+		DEFAULT_ENCODED_FORMAT_CASE(VORBIS)
+		DEFAULT_ENCODED_FORMAT_CASE(FLAC)
+		DEFAULT_ENCODED_FORMAT_CASE(ALAC)
+		DEFAULT_ENCODED_FORMAT_CASE(REAL_AUDIO)
 
 		case GST_PIPEWIRE_AUDIO_TYPE_AAC:
 		{
