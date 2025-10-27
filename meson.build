@@ -1,4 +1,4 @@
-project('gst-pipewire-extra', 'c', default_options : ['c_std=gnu99'], version : '1.0.0')
+project('gst-pipewire-extra', 'c', default_options : ['c_std=gnu11'], version : '1.0.0')
 
 gstreamer_dep       = dependency('gstreamer-1.0',       version : '>=1.24.0', required : true)
 gstreamer_base_dep  = dependency('gstreamer-base-1.0',  version : '>=1.24.0', required : true)
