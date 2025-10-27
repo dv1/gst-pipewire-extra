@@ -8,6 +8,9 @@ gstreamer_audio_dep = dependency('gstreamer-audio-1.0', version : '>=1.24.0', re
 libspa_dep = dependency('libspa-0.2', required : true, version : '>=0.2')
 libpipewire_dep = dependency('libpipewire-0.3', required : true, version : '>=1.0.0')
 
+supports_ac3_eac3_truehd_dts_mpegh = libpipewire_dep.version().version_compare('>=1.6.0')
+summary('PipeWire supports AC-3, EAC-3, TrueHD, DTS, MPEG-H', supports_ac3_eac3_truehd_dts_mpegh)
+
 plugins_install_dir = join_paths(get_option('libdir'), 'gstreamer-1.0')
 
 
@@ -20,6 +23,7 @@ conf_data.set_quoted('GST_PACKAGE_ORIGIN', get_option('package-origin'))
 conf_data.set_quoted('PACKAGE', 'gst-pipewire-extra')
 conf_data.set_quoted('PACKAGE_BUGREPORT', 'https://github.com/dv1/gst-pipewire-extra')
 conf_data.set_quoted('VERSION', meson.project_version())
+conf_data.set10('SUPPORTS_AC3_EAC3_TRUEHD_DTS_MPEGH', supports_ac3_eac3_truehd_dts_mpegh)
 
 
 gstpipewireextra_plugin = library(

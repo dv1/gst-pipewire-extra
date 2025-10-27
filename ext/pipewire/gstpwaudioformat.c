@@ -72,6 +72,7 @@
  */
 
 #include <string.h>
+#include "config.h"
 #include "gstpwaudioformat.h"
 
 /* Turn off -pedantic to mask the "ISO C forbids braced-groups within expressions"
@@ -256,6 +257,66 @@ static GstPipewireAudioTypeDetails const audio_type_details[GST_NUM_PIPEWIRE_AUD
 			"channels = (int) [ 1, MAX ]",
 		.is_raw = FALSE
 	},
+
+#if SUPPORTS_AC3_EAC3_TRUEHD_DTS_MPEGH
+	/* AC3 */
+	{
+		.name = "AC3",
+		.template_caps_string = \
+			"audio/x-ac3, " \
+			"framed = (boolean) true, " \
+			"alignment = (string) frame, " \
+			"rate = (int) [ 1, MAX ], " \
+			"channels = (int) [ 1, MAX ]",
+		.is_raw = FALSE
+	},
+
+	/* EAC3 */
+	{
+		.name = "EAC3",
+		.template_caps_string = \
+			"audio/x-eac3, " \
+			"framed = (boolean) true, " \
+			"alignment = (string) frame, " \
+			"rate = (int) [ 1, MAX ], " \
+			"channels = (int) [ 1, MAX ]",
+		.is_raw = FALSE
+	},
+
+	/* TrueHD */
+	{
+		.name = "TrueHD",
+		.template_caps_string = \
+			"audio/x-true-hd, " \
+			"framed = (boolean) true, " \
+			"rate = (int) [ 1, MAX ], " \
+			"channels = (int) [ 1, MAX ]",
+		.is_raw = FALSE
+	},
+
+	/* DTS */
+	{
+		.name = "DTS",
+		.template_caps_string = \
+			"audio/x-dts, " \
+			"framed = (boolean) true, " \
+			"rate = (int) [ 1, MAX ], " \
+			"channels = (int) [ 1, MAX ]",
+		.is_raw = FALSE
+	},
+
+	/* MPEG-H 3D audio */
+	{
+		.name = "MPEG-H audio stream",
+		.template_caps_string = \
+			"audio/x-mpeg-h, " \
+			"stream-format = (string) mhas, " \
+			"framed = (boolean) true, " \
+			"stream-type = (string) single, " \
+			"rate = (int) [ 1, MAX ], " ,
+		.is_raw = FALSE
+	},
+#endif
 };
 
 
@@ -565,6 +626,18 @@ gboolean gst_pw_audio_format_from_caps(GstPwAudioFormat *pw_audio_format, GstObj
 		pw_audio_format->audio_type = GST_PIPEWIRE_AUDIO_TYPE_ALAC;
 	else if (g_strcmp0(media_type, "audio/x-pn-realaudio") == 0)
 		pw_audio_format->audio_type = GST_PIPEWIRE_AUDIO_TYPE_REAL_AUDIO;
+#if SUPPORTS_AC3_EAC3_TRUEHD_DTS_MPEGH
+	else if (g_strcmp0(media_type, "audio/x-ac3") == 0)
+		pw_audio_format->audio_type = GST_PIPEWIRE_AUDIO_TYPE_AC3;
+	else if (g_strcmp0(media_type, "audio/x-eac3") == 0)
+		pw_audio_format->audio_type = GST_PIPEWIRE_AUDIO_TYPE_EAC3;
+	else if (g_strcmp0(media_type, "audio/x-true-hd") == 0)
+		pw_audio_format->audio_type = GST_PIPEWIRE_AUDIO_TYPE_TRUEHD;
+	else if (g_strcmp0(media_type, "audio/x-dts") == 0)
+		pw_audio_format->audio_type = GST_PIPEWIRE_AUDIO_TYPE_DTS;
+	else if (g_strcmp0(media_type, "audio/x-mpeg-h") == 0)
+		pw_audio_format->audio_type = GST_PIPEWIRE_AUDIO_TYPE_MPEGH;
+#endif
 	else
 	{
 		GST_ERROR_OBJECT(parent, "unsupported media type \"%s\"", media_type);
@@ -609,10 +682,19 @@ gboolean gst_pw_audio_format_from_caps(GstPwAudioFormat *pw_audio_format, GstObj
 		case GST_PIPEWIRE_AUDIO_TYPE_WMA:
 		case GST_PIPEWIRE_AUDIO_TYPE_ALAC:
 		case GST_PIPEWIRE_AUDIO_TYPE_REAL_AUDIO:
+#if SUPPORTS_AC3_EAC3_TRUEHD_DTS_MPEGH
+		case GST_PIPEWIRE_AUDIO_TYPE_AC3:
+		case GST_PIPEWIRE_AUDIO_TYPE_EAC3:
+		case GST_PIPEWIRE_AUDIO_TYPE_TRUEHD:
+		case GST_PIPEWIRE_AUDIO_TYPE_DTS:
+		case GST_PIPEWIRE_AUDIO_TYPE_MPEGH:
+#endif
 		{
-			/* All encoded formats have a rate and channels field in their caps.
-			 * Some have additional information, such as the profile in WMA. */
+			/* All encoded formats have a rate field in their caps. Most also
+			 * have a channels field (MPEG-H is a notable exception). Some have
+			 * additional information, such as the profile in WMA. */
 
+			gboolean requires_channels = TRUE;
 			GstPipewireEncodedAudioInfo *encoded_audio_info = &(pw_audio_format->info.encoded_audio_info);
 
 			if (!gst_structure_get_int(fmt_structure, "rate", &(encoded_audio_info->rate)))
@@ -627,19 +709,7 @@ gboolean gst_pw_audio_format_from_caps(GstPwAudioFormat *pw_audio_format, GstObj
 				goto error;
 			}
 
-			if (!gst_structure_get_int(fmt_structure, "channels", &(encoded_audio_info->channels)))
-			{
-				GST_ERROR_OBJECT(parent, "caps have no channels field; caps: %" GST_PTR_FORMAT, (gpointer)caps);
-				goto error;
-			}
-
-			if (encoded_audio_info->channels < 1)
-			{
-				GST_ERROR_OBJECT(parent, "caps have invalid channels field; caps: %" GST_PTR_FORMAT, (gpointer)caps);
-				goto error;
-			}
-
-			/* Handle additional, format specific caps. */
+			/* Handle additional caps and other format specific details. */
 			switch (pw_audio_format->audio_type)
 			{
 				case GST_PIPEWIRE_AUDIO_TYPE_MP3:
@@ -728,8 +798,29 @@ gboolean gst_pw_audio_format_from_caps(GstPwAudioFormat *pw_audio_format, GstObj
 					break;
 				}
 
+#if SUPPORTS_AC3_EAC3_TRUEHD_DTS_MPEGH
+				case GST_PIPEWIRE_AUDIO_TYPE_MPEGH:
+					requires_channels = FALSE;
+					break;
+#endif
+
 				default:
 					break;
+			}
+
+			if (requires_channels)
+			{
+				if (!gst_structure_get_int(fmt_structure, "channels", &(encoded_audio_info->channels)))
+				{
+					GST_ERROR_OBJECT(parent, "caps have no channels field; caps: %" GST_PTR_FORMAT, (gpointer)caps);
+					goto error;
+				}
+
+				if (encoded_audio_info->channels < 1)
+				{
+					GST_ERROR_OBJECT(parent, "caps have invalid channels field; caps: %" GST_PTR_FORMAT, (gpointer)caps);
+					goto error;
+				}
 			}
 
 			break;
@@ -921,6 +1012,19 @@ gboolean gst_pw_audio_format_to_spa_pod(
 			break; \
 		}
 
+#define ENCODED_FORMAT_CASE_NO_CHANNELS(TYPE_NAME, name, ...) \
+		case GST_PIPEWIRE_AUDIO_TYPE_##TYPE_NAME : \
+		{ \
+			struct spa_audio_info_##name name ##_info = { \
+				.rate = pw_audio_format->info.encoded_audio_info.rate, \
+				__VA_ARGS__ \
+			}; \
+\
+			*pod = spa_format_audio_##name##_build(&builder, SPA_PARAM_EnumFormat, & name##_info); \
+\
+			break; \
+		}
+
 		ENCODED_FORMAT_CASE(MP3, mp3)
 		ENCODED_FORMAT_CASE(AAC, aac,
 			.stream_format = (enum spa_audio_aac_stream_format)(pw_audio_format->info.encoded_audio_info.details.aac.stream_format)
@@ -934,6 +1038,13 @@ gboolean gst_pw_audio_format_to_spa_pod(
 		)
 		ENCODED_FORMAT_CASE(ALAC, alac)
 		ENCODED_FORMAT_CASE(REAL_AUDIO, ra)
+#if SUPPORTS_AC3_EAC3_TRUEHD_DTS_MPEGH
+		ENCODED_FORMAT_CASE(AC3, ac3)
+		ENCODED_FORMAT_CASE(EAC3, eac3)
+		ENCODED_FORMAT_CASE(TRUEHD, truehd)
+		ENCODED_FORMAT_CASE(DTS, dts)
+		ENCODED_FORMAT_CASE_NO_CHANNELS(MPEGH, mpegh)
+#endif
 
 		default:
 			goto error;
@@ -941,6 +1052,7 @@ gboolean gst_pw_audio_format_to_spa_pod(
 
 	return TRUE;
 
+#undef ENCODED_FORMAT_CASE_NO_CHANNELS
 #undef ENCODED_FORMAT_CASE
 
 error:
@@ -1089,6 +1201,19 @@ gboolean gst_pw_audio_format_from_spa_pod_with_format_param(
 			pw_audio_format->audio_type = GST_PIPEWIRE_AUDIO_TYPE_ ##UPPER_NAME; \
 		} G_STMT_END
 
+#define COMMON_ENCODED_FORMAT_PROCESSING_NO_CHANNELS(LOWER_NAME, UPPER_NAME) \
+		G_STMT_START { \
+			if (spa_format_audio_##LOWER_NAME##_parse(format_param_pod, &(info.info.LOWER_NAME)) < 0) \
+			{ \
+				GST_ERROR_OBJECT(parent, "could not parse " #UPPER_NAME " format: %s (%d)", wrapped_spa_strerror(err), -err); \
+				goto error; \
+			} \
+\
+			pw_audio_format->info.encoded_audio_info.rate = info.info.LOWER_NAME.rate; \
+ \
+			pw_audio_format->audio_type = GST_PIPEWIRE_AUDIO_TYPE_ ##UPPER_NAME; \
+		} G_STMT_END
+
 		case SPA_MEDIA_SUBTYPE_mp3:
 			COMMON_ENCODED_FORMAT_PROCESSING(mp3, MP3);
 			break;
@@ -1162,6 +1287,28 @@ gboolean gst_pw_audio_format_from_spa_pod_with_format_param(
 			COMMON_ENCODED_FORMAT_PROCESSING(ra, REAL_AUDIO);
 			break;
 
+#if SUPPORTS_AC3_EAC3_TRUEHD_DTS_MPEGH
+		case SPA_MEDIA_SUBTYPE_ac3:
+			COMMON_ENCODED_FORMAT_PROCESSING(ac3, AC3);
+			break;
+
+		case SPA_MEDIA_SUBTYPE_eac3:
+			COMMON_ENCODED_FORMAT_PROCESSING(eac3, EAC3);
+			break;
+
+		case SPA_MEDIA_SUBTYPE_truehd:
+			COMMON_ENCODED_FORMAT_PROCESSING(truehd, TRUEHD);
+			break;
+
+		case SPA_MEDIA_SUBTYPE_dts:
+			COMMON_ENCODED_FORMAT_PROCESSING(dts, DTS);
+			break;
+
+		case SPA_MEDIA_SUBTYPE_mpegh:
+			COMMON_ENCODED_FORMAT_PROCESSING_NO_CHANNELS(mpegh, MPEGH);
+			break;
+#endif
+
 		default:
 			GST_ERROR_OBJECT(parent, "unsupported SPA media subtype %#010" G_GINT32_MODIFIER "x", (guint32)(info.media_subtype));
 			goto error;
@@ -1169,6 +1316,7 @@ gboolean gst_pw_audio_format_from_spa_pod_with_format_param(
 
 	return TRUE;
 
+#undef COMMON_ENCODED_FORMAT_PROCESSING_NO_CHANNELS
 #undef COMMON_ENCODED_FORMAT_PROCESSING
 
 error:
@@ -1251,6 +1399,17 @@ gboolean gst_pw_audio_format_build_spa_pod_for_probing(
 			); \
 			break;
 
+#define ENCODED_FORMAT_CASE_NO_CHANNELS(TYPE_NAME, SPA_TYPE_NAME, name, ...) \
+		case GST_PIPEWIRE_AUDIO_TYPE_##TYPE_NAME : \
+			*pod = spa_format_audio_##name##_build( \
+				&builder, SPA_PARAM_EnumFormat, \
+				&SPA_AUDIO_INFO_##SPA_TYPE_NAME##_INIT( \
+					.rate = 44100, \
+					__VA_ARGS__ \
+				) \
+			); \
+			break;
+
 		ENCODED_FORMAT_CASE(MP3, MP3, mp3)
 		ENCODED_FORMAT_CASE(AAC, AAC, aac,
 			.stream_format = SPA_AUDIO_AAC_STREAM_FORMAT_RAW
@@ -1263,11 +1422,19 @@ gboolean gst_pw_audio_format_build_spa_pod_for_probing(
 		)
 		ENCODED_FORMAT_CASE(ALAC, ALAC, alac)
 		ENCODED_FORMAT_CASE(REAL_AUDIO, RA, ra)
+#if SUPPORTS_AC3_EAC3_TRUEHD_DTS_MPEGH
+		ENCODED_FORMAT_CASE(AC3, AC3, ac3)
+		ENCODED_FORMAT_CASE(EAC3, EAC3, eac3)
+		ENCODED_FORMAT_CASE(TRUEHD, TRUEHD, truehd)
+		ENCODED_FORMAT_CASE(DTS, DTS, dts)
+		ENCODED_FORMAT_CASE_NO_CHANNELS(MPEGH, MPEGH, mpegh)
+#endif
 
 		default:
 			return FALSE;
 	}
 
+#undef ENCODED_FORMAT_CASE_NO_CHANNELS
 #undef ENCODED_FORMAT_CASE
 
 	return TRUE;
@@ -1321,6 +1488,13 @@ gsize gst_pw_audio_format_get_stride(GstPwAudioFormat const *pw_audio_format)
 		case GST_PIPEWIRE_AUDIO_TYPE_WMA:
 		case GST_PIPEWIRE_AUDIO_TYPE_ALAC:
 		case GST_PIPEWIRE_AUDIO_TYPE_REAL_AUDIO:
+#if SUPPORTS_AC3_EAC3_TRUEHD_DTS_MPEGH
+		case GST_PIPEWIRE_AUDIO_TYPE_AC3:
+		case GST_PIPEWIRE_AUDIO_TYPE_EAC3:
+		case GST_PIPEWIRE_AUDIO_TYPE_TRUEHD:
+		case GST_PIPEWIRE_AUDIO_TYPE_DTS:
+		case GST_PIPEWIRE_AUDIO_TYPE_MPEGH:
+#endif
 			return 1;
 
 		default:
@@ -1389,6 +1563,16 @@ gchar* gst_pw_audio_format_to_string(GstPwAudioFormat const *pw_audio_format)
 			); \
 		}
 
+#define DEFAULT_ENCODED_FORMAT_CASE_NO_CHANNELS(TYPE_NAME) \
+		case GST_PIPEWIRE_AUDIO_TYPE_##TYPE_NAME: \
+		{ \
+			return gst_info_strdup_printf( \
+				"%s: rate %d", \
+				details->name, \
+				pw_audio_format->info.encoded_audio_info.rate \
+			); \
+		}
+
 		DEFAULT_ENCODED_FORMAT_CASE(MP3)
 		DEFAULT_ENCODED_FORMAT_CASE(VORBIS)
 		DEFAULT_ENCODED_FORMAT_CASE(FLAC)
@@ -1416,6 +1600,15 @@ gchar* gst_pw_audio_format_to_string(GstPwAudioFormat const *pw_audio_format)
 			);
 		}
 
+#if SUPPORTS_AC3_EAC3_TRUEHD_DTS_MPEGH
+		DEFAULT_ENCODED_FORMAT_CASE(AC3)
+		DEFAULT_ENCODED_FORMAT_CASE(EAC3)
+		DEFAULT_ENCODED_FORMAT_CASE(TRUEHD)
+		DEFAULT_ENCODED_FORMAT_CASE(DTS)
+		DEFAULT_ENCODED_FORMAT_CASE_NO_CHANNELS(MPEGH)
+#endif
+
+#undef DEFAULT_ENCODED_FORMAT_CASE_NO_CHANNELS
 #undef DEFAULT_ENCODED_FORMAT_CASE
 
 		default:
@@ -1463,6 +1656,13 @@ gsize gst_pw_audio_format_calculate_num_frames_from_duration(GstPwAudioFormat co
 		case GST_PIPEWIRE_AUDIO_TYPE_WMA:
 		case GST_PIPEWIRE_AUDIO_TYPE_ALAC:
 		case GST_PIPEWIRE_AUDIO_TYPE_REAL_AUDIO:
+#if SUPPORTS_AC3_EAC3_TRUEHD_DTS_MPEGH
+		case GST_PIPEWIRE_AUDIO_TYPE_AC3:
+		case GST_PIPEWIRE_AUDIO_TYPE_EAC3:
+		case GST_PIPEWIRE_AUDIO_TYPE_TRUEHD:
+		case GST_PIPEWIRE_AUDIO_TYPE_DTS:
+		case GST_PIPEWIRE_AUDIO_TYPE_MPEGH:
+#endif
 		{
 			GstPipewireEncodedAudioInfo const *info = &(pw_audio_format->info.encoded_audio_info);
 			return gst_util_uint64_scale_int(duration, info->rate, GST_SECOND);
@@ -1510,6 +1710,13 @@ GstClockTime gst_pw_audio_format_calculate_duration_from_num_frames(GstPwAudioFo
 		case GST_PIPEWIRE_AUDIO_TYPE_WMA:
 		case GST_PIPEWIRE_AUDIO_TYPE_ALAC:
 		case GST_PIPEWIRE_AUDIO_TYPE_REAL_AUDIO:
+#if SUPPORTS_AC3_EAC3_TRUEHD_DTS_MPEGH
+		case GST_PIPEWIRE_AUDIO_TYPE_AC3:
+		case GST_PIPEWIRE_AUDIO_TYPE_EAC3:
+		case GST_PIPEWIRE_AUDIO_TYPE_TRUEHD:
+		case GST_PIPEWIRE_AUDIO_TYPE_DTS:
+		case GST_PIPEWIRE_AUDIO_TYPE_MPEGH:
+#endif
 		{
 			GstPipewireEncodedAudioInfo const *info = &(pw_audio_format->info.encoded_audio_info);
 			return gst_util_uint64_scale_int(num_frames, GST_SECOND, info->rate);
