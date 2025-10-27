@@ -90,7 +90,7 @@ GST_START_TEST(initial_behavior)
 	t = gst_clock_get_internal_time(GST_CLOCK(clock));
 	assert_equals_uint64(t, 2000);
 }
-GST_END_TEST;
+GST_END_TEST
 
 
 GST_START_TEST(frozen_clock)
@@ -149,7 +149,7 @@ GST_START_TEST(frozen_clock)
 	t = gst_clock_get_internal_time(GST_CLOCK(clock));
 	assert_equals_uint64(t, 550);
 }
-GST_END_TEST;
+GST_END_TEST
 
 
 GST_START_TEST(extrapolation_overshoot)
@@ -212,7 +212,7 @@ GST_START_TEST(extrapolation_overshoot)
 	t = gst_clock_get_internal_time(GST_CLOCK(clock));
 	assert_equals_uint64(t, 2100);
 }
-GST_END_TEST;
+GST_END_TEST
 
 
 static Suite * gst_pw_stream_clock_suite(void)
@@ -228,4 +228,4 @@ static Suite * gst_pw_stream_clock_suite(void)
 	return s;
 }
 
-GST_CHECK_MAIN(gst_pw_stream_clock);
+GST_CHECK_MAIN(gst_pw_stream_clock)
