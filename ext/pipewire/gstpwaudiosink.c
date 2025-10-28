@@ -3608,7 +3608,11 @@ static void gst_pw_audio_sink_raw_on_process_stream(void *data)
 		clock_gettime(CLOCK_MONOTONIC, &ts);
 		time_since_delay_measurement = SPA_TIMESPEC_TO_NSEC(&ts) - stream_time.now;
 
-		if (G_LIKELY(stream_delay_in_ns >= time_since_delay_measurement))
+		if (G_UNLIKELY(stream_delay_in_ns == 0))
+		{
+			GST_LOG_OBJECT(self, "delay is reported as 0; graph latency is most likely not set; cannot detect underruns");
+		}
+		else if (G_LIKELY(stream_delay_in_ns >= time_since_delay_measurement))
 		{
 			GST_LOG_OBJECT(self, "nanoseconds since delay measurement: %" G_GINT64_FORMAT, time_since_delay_measurement);
 		}
