@@ -1874,16 +1874,37 @@ static void gst_pw_audio_sink_get_times(GstBaseSink *basesink, GstBuffer *buffer
 static gboolean copy_stream_properties_to_pw_props(GQuark field_id, GValue const *value, gpointer data)
 {
 	struct pw_properties *pw_props = (struct pw_properties *)data;
-	GValue stringified_gvalue = G_VALUE_INIT;
 
-	if (g_value_type_transformable(G_VALUE_TYPE(value), G_TYPE_STRING))
+	switch (G_VALUE_TYPE(value))
 	{
-		g_value_init(&stringified_gvalue, G_TYPE_STRING);
+		case G_TYPE_BOOLEAN:
+		{
+			/* Booleans must be handled separately, because g_value_transform()
+			 * converts them to the uppercase "TRUE" and "FALSE" strings. PipeWire
+			 * expects boolean values to be specified with lowercase "true" and
+			 * "false" strings.  Uppercase versions  are interpreted as string
+			 * values instead of boolean ones. To ensure that the boolean value
+			 * is actually communicated as a boolean, set the lowercase "true"
+			 * and "false" strings manually. */
+			pw_properties_set(pw_props, g_quark_to_string(field_id), g_value_get_boolean(value) ? "true" : "false");
+			break;
+		}
 
-		if (g_value_transform(value, &stringified_gvalue))
-			pw_properties_set(pw_props, g_quark_to_string(field_id), g_value_get_string(&stringified_gvalue));
+		default:
+		{
+			if (g_value_type_transformable(G_VALUE_TYPE(value), G_TYPE_STRING))
+			{
+				GValue stringified_gvalue = G_VALUE_INIT;
 
-		g_value_unset(&stringified_gvalue);
+				g_value_init(&stringified_gvalue, G_TYPE_STRING);
+
+				if (g_value_transform(value, &stringified_gvalue))
+					pw_properties_set(pw_props, g_quark_to_string(field_id), g_value_get_string(&stringified_gvalue));
+
+				g_value_unset(&stringified_gvalue);
+			}
+			break;
+		}
 	}
 
 	return TRUE;
