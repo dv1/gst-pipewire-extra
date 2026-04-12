@@ -2444,41 +2444,60 @@ static GstFlowReturn gst_pw_audio_sink_render_raw(GstPwAudioSink *self, GstBuffe
 
 				if (G_UNLIKELY((ABS(discontinuity) > self->alignment_threshold) || ((discontinuity != 0) && force_discontinuity_handling)))
 				{
-					/* A positive discontinuity value means that there is a gap between
-					 * this buffer and the last one. If we are playing contiguous
-					 * audio data, we can fill the gap with silence frames.
-					 * A negative discontinuity value means that the last N nanoseconds
-					 * of the last buffer overlap with the first N nanoseconds of this
-					 * buffer. We have to throw away the first N nanoseconds of the
-					 * new buffer in that case. (N = ABS(discontinuity)) */
-
-					if (discontinuity > 0)
+					/* If the discontinuity is small enough (smaller than the current buffer),
+					 * it can be fixed by adding silence or clipping frames. If it is larger
+					 * than the buffer though, a hard audio data buffer reset is the only
+					 * option, since compensating for a very large discontinuity by clipping
+					 * several whole buffers or insert lots of silence does not work reliably. */
+					if (((GstClockTime)ABS(discontinuity)) < GST_BUFFER_DURATION(original_incoming_buffer))
 					{
-						/* Shift the running-time PTS to make room for the extra silence frames. */
-						running_time_pts += discontinuity;
-						num_silence_frames_to_insert = gst_pw_audio_format_calculate_num_frames_from_duration(&(self->pw_audio_format), discontinuity);
-						GST_DEBUG_OBJECT(
-							self,
-							"discontinuity detected (%" GST_TIME_FORMAT "); need to insert %" G_GSIZE_FORMAT " silence frame(s) to compensate",
-							GST_TIME_ARGS(discontinuity),
-							num_silence_frames_to_insert
-						);
+						/* A positive discontinuity value means that there is a gap between
+						 * this buffer and the last one. If we are playing contiguous
+						 * audio data, we can fill the gap with silence frames.
+						 * A negative discontinuity value means that the last N nanoseconds
+						 * of the last buffer overlap with the first N nanoseconds of this
+						 * buffer. We have to throw away the first N nanoseconds of the
+						 * new buffer in that case. (N = ABS(discontinuity)) */
+
+						if (discontinuity > 0)
+						{
+							/* Shift the running-time PTS to make room for the extra silence frames. */
+							running_time_pts += discontinuity;
+							num_silence_frames_to_insert = gst_pw_audio_format_calculate_num_frames_from_duration(&(self->pw_audio_format), discontinuity);
+							GST_DEBUG_OBJECT(
+								self,
+								"discontinuity detected (%" GST_TIME_FORMAT "); need to insert %" G_GSIZE_FORMAT " silence frame(s) to compensate",
+								GST_TIME_ARGS(discontinuity),
+								num_silence_frames_to_insert
+							);
+						}
+						else
+						{
+							/* We need to clip the first N nanoseconds (N = -discontinuity), since these
+							 * overlap with already played data. The start of the remaining data needs to
+							 * be shifted into the future by (-discontinuity) nanoseconds to align it with
+							 * the previous data and to account for the clipped amount. clipped_pts_end
+							 * is not modified, however, since the overall duration of the data to play
+							 * is reduced by (-discontinuity) nanoseconds by the clipping. */
+							running_time_pts += (-discontinuity);
+							clipped_pts_begin += (-discontinuity);
+							GST_DEBUG_OBJECT(
+								self,
+								"discontinuity detected (-%" GST_TIME_FORMAT "); need to clip this (positive) amount of nanoseconds from the beginning of the gstbuffer",
+								GST_TIME_ARGS(-discontinuity)
+							);
+						}
 					}
 					else
 					{
-						/* We need to clip the first N nanoseconds (N = -discontinuity), since these
-						 * overlap with already played data. The start of the remaining data needs to
-						 * be shifted into the future by (-discontinuity) nanoseconds to align it with
-						 * the previous data and to account for the clipped amount. clipped_pts_end
-						 * is not modified, however, since the overall duration of the data to play
-						 * is reduced by (-discontinuity) nanoseconds by the clipping. */
-						running_time_pts += (-discontinuity);
-						clipped_pts_begin += (-discontinuity);
 						GST_DEBUG_OBJECT(
 							self,
-							"discontinuity detected (-%" GST_TIME_FORMAT "); need to clip this (positive) amount of nanoseconds from the beginning of the gstbuffer",
-							GST_TIME_ARGS(-discontinuity)
+							"discontinuity detected (%" GST_STIME_FORMAT ") that is too large for fixing in-place; resetting audio data buffer",
+							GST_STIME_ARGS(discontinuity)
 						);
+						LOCK_AUDIO_DATA_BUFFER_MUTEX(self);
+						gst_pw_audio_sink_reset_audio_data_buffer_unlocked(self);
+						UNLOCK_AUDIO_DATA_BUFFER_MUTEX(self);
 					}
 				}
 			}
